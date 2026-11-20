@@ -102,7 +102,7 @@ const VALID_PROVIDERS = new Set<ProviderSlug>([
 ]);
 
 function sanitizeDownloadName(raw: string): string {
-  return raw.replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 80) || 'stockforge-asset';
+  return raw.replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 80) || 'zuumstock-asset';
 }
 
 function getSafeSvgForAsset(asset: StockAsset): string {
@@ -700,7 +700,7 @@ export function createApp() {
   // --- Stateless Single Asset Export (Serverless cold-start resilient) ---
   app.post('/api/export/single', async (req: Request, res: Response) => {
     try {
-      const { id = 'stockforge-asset', title = 'StockForge Vector', svgContent, format = 'svg', size, quality } =
+      const { id = 'zuumstock-asset', title = 'ZuumStock Vector', svgContent, format = 'svg', size, quality } =
         req.body ?? {};
       const fmt = String(format).toLowerCase();
       if (!['svg', 'eps', 'png', 'jpg'].includes(fmt)) {
@@ -872,7 +872,7 @@ export function createApp() {
       const zipBuf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
       const bundleName = batchId
         ? `${sanitizeDownloadName(batchId)}-bundle.zip`
-        : `stockforge-export-${assets.length}-assets.zip`;
+        : `zuumstock-export-${assets.length}-assets.zip`;
 
       addProductionLog({
         eventType: 'export_bundle',

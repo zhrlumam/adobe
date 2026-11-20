@@ -576,7 +576,7 @@ export async function downloadExportBundle(payload: {
   const blob = await res.blob();
   const filename = payload.batchId
     ? `${payload.batchId}-bundle.zip`
-    : 'stockforge-export-bundle.zip';
+    : 'zuumstock-export-bundle.zip';
   triggerBlobDownload(blob, filename);
 }
 

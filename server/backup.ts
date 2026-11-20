@@ -11,7 +11,7 @@ export async function createLocalBackupArchive(): Promise<{
 }> {
   const zip = new JSZip();
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const filename = `stockforge-backup-${stamp}.zip`;
+  const filename = `zuumstock-backup-${stamp}.zip`;
   const snapshotPath = path.join(BACKUPS_DIR, `snapshot-${stamp}.db`);
 
   // Clean consistent SQLite snapshot using VACUUM INTO
@@ -36,7 +36,7 @@ export async function createLocalBackupArchive(): Promise<{
     'manifest.json',
     JSON.stringify(
       {
-        application: 'StockForge Studio',
+        application: 'ZuumStock Studio',
         createdAt: new Date().toISOString(),
         assetCount,
         databaseBytes: fs.existsSync(DB_PATH) ? fs.statSync(DB_PATH).size : 0,

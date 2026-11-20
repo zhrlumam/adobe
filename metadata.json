@@ -1,5 +1,5 @@
 {
-  "name": "StockForge Studio",
+  "name": "ZuumStock Studio",
   "description": "AI-powered commercial stock vector production platform with multi-provider engine, SVG/EPS/PNG/JPG export, batch queue management, and Adobe Stock & Shutterstock metadata.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

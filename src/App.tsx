@@ -95,9 +95,26 @@ export default function App() {
     <div className="min-h-screen flex bg-[#F8FAFC] text-[#0F172A]">
       {/* Fixed Desktop Sidebar */}
       <aside className="hidden lg:flex lg:flex-col lg:w-64 lg:shrink-0 border-r border-slate-200 bg-white">
-        <div className="h-14 px-5 border-b border-slate-200 flex items-center justify-between">
+        <div className="h-14 px-5 border-b border-slate-200 flex items-center gap-2.5">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 28 28"
+            className="w-6 h-6 shrink-0"
+            aria-hidden="true"
+          >
+            <rect width="28" height="28" rx="6" fill="#0F172A" />
+            <path
+              d="M8.5 9.5H19.5L9.5 18.5H19.5"
+              fill="none"
+              stroke="#60A5FA"
+              strokeWidth="2.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <circle cx="19.5" cy="9.5" r="2" fill="#FFFFFF" />
+          </svg>
           <span className="font-display text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap">
-            StockForge Studio
+            ZuumStock Studio
           </span>
         </div>
 
@@ -150,7 +167,7 @@ export default function App() {
           <aside className="relative z-10 w-64 bg-white h-full border-r border-slate-200 flex flex-col">
             <div className="h-14 px-4 border-b border-slate-200 flex items-center justify-between">
               <span className="font-display text-lg font-bold text-slate-900">
-                StockForge Studio
+                ZuumStock Studio
               </span>
               <button
                 type="button"
@@ -200,7 +217,7 @@ export default function App() {
               <Menu className="w-5 h-5" />
             </button>
             <div className="flex items-center gap-2 text-xs text-slate-500 whitespace-nowrap truncate">
-              <span className="font-medium text-slate-900">StockForge Studio</span>
+              <span className="font-medium text-slate-900">ZuumStock Studio</span>
               <span aria-hidden="true">/</span>
               <span>{currentTabMeta.label}</span>
             </div>

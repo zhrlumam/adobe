@@ -442,22 +442,60 @@ function arcToCubicCurves(
   return curves;
 }
 
-export function convertSvgToVectorEps(svg: string, artboardSize = 1000, title = 'StockForge Vector'): string {
+function blendRgbWithAlphaOnWhite(
+  rgb: [number, number, number],
+  alpha: number
+): [number, number, number] {
+  const a = Math.max(0, Math.min(1, alpha));
+  return [1 - a + a * rgb[0], 1 - a + a * rgb[1], 1 - a + a * rgb[2]];
+}
+
+function parseOpacity(val: string | undefined, fallback = 1): number {
+  if (val === undefined || val === '') return fallback;
+  const n = parseFloat(val);
+  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : fallback;
+}
+
+function numAttr(val: string | undefined, fallback = 0): number {
+  if (val === undefined || val === '') return fallback;
+  const n = parseFloat(val);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+export function convertSvgToVectorEps(svg: string, artboardSize = 1000, title = 'ZuumStock Vector'): string {
   const { viewBoxRect } = sanitizeAndValidateSvg(svg, false);
   const scaleX = artboardSize / viewBoxRect.width;
   const scaleY = artboardSize / viewBoxRect.height;
   const scale = Math.min(scaleX, scaleY);
 
-  // Extract gradient stops as solid fallback colors
+  // Extract gradient stops and blend first/last stops so EPS vectors keep vibrant midtone colors
   const gradients = new Map<string, string>();
   const gradRegex = /<(linearGradient|radialGradient)\b([^>]*)>([\s\S]*?)<\/\1>/gi;
   let gm: RegExpExecArray | null;
   while ((gm = gradRegex.exec(svg)) !== null) {
     const gAttrs = parseAttributes(gm[2]);
     if (gAttrs.id) {
-      const stopMatch = gm[3].match(/stop-color\s*[:=]\s*["']?([#a-zA-Z0-9(),.\s]+?)["';\s]/i);
-      if (stopMatch) {
-        gradients.set(gAttrs.id, stopMatch[1].trim());
+      const stopColors: [number, number, number][] = [];
+      const stopTagRegex = /<stop\b([^>]*)\/?\s*>/gi;
+      let sm: RegExpExecArray | null;
+      while ((sm = stopTagRegex.exec(gm[3])) !== null) {
+        const sAttrs = parseAttributes(sm[1]);
+        const rawColor = sAttrs['stop-color'];
+        if (rawColor) {
+          const parsed = parseColor(rawColor, gradients);
+          if (parsed) stopColors.push(parsed);
+        }
+      }
+      if (stopColors.length === 1) {
+        const [r, g, b] = stopColors[0].map((c) => Math.round(c * 255));
+        gradients.set(gAttrs.id, `rgb(${r},${g},${b})`);
+      } else if (stopColors.length >= 2) {
+        const first = stopColors[0];
+        const last = stopColors[stopColors.length - 1];
+        const r = Math.round(((first[0] + last[0]) / 2) * 255);
+        const g = Math.round(((first[1] + last[1]) / 2) * 255);
+        const b = Math.round(((first[2] + last[2]) / 2) * 255);
+        gradients.set(gAttrs.id, `rgb(${r},${g},${b})`);
       }
     }
   }
@@ -477,6 +515,10 @@ export function convertSvgToVectorEps(svg: string, artboardSize = 1000, title = 
     fillRule?: string;
     strokeLinecap?: string;
     strokeLinejoin?: string;
+    opacity: number;
+    fillOpacity: number;
+    strokeOpacity: number;
+    hidden: boolean;
     matrix: Matrix;
   }
 
@@ -488,6 +530,10 @@ export function convertSvgToVectorEps(svg: string, artboardSize = 1000, title = 
       fillRule: 'nonzero',
       strokeLinecap: 'butt',
       strokeLinejoin: 'miter',
+      opacity: 1,
+      fillOpacity: 1,
+      strokeOpacity: 1,
+      hidden: false,
       matrix: [1, 0, 0, 1, 0, 0],
     },
   ];
@@ -504,7 +550,17 @@ export function convertSvgToVectorEps(svg: string, artboardSize = 1000, title = 
     const attrs = parseAttributes(tok[3] || '');
     const isSelfClose = tok[4] === '/';
 
-    if (tag === 'defs' || tag === 'lineargradient' || tag === 'radialgradient' || tag === 'clippath' || tag === 'mask') {
+    if (
+      tag === 'defs' ||
+      tag === 'lineargradient' ||
+      tag === 'radialgradient' ||
+      tag === 'clippath' ||
+      tag === 'mask' ||
+      tag === 'style' ||
+      tag === 'title' ||
+      tag === 'desc' ||
+      tag === 'metadata'
+    ) {
       if (isClose) insideDefs = Math.max(0, insideDefs - 1);
       else if (!isSelfClose) insideDefs++;
       continue;
@@ -519,6 +575,13 @@ export function convertSvgToVectorEps(svg: string, artboardSize = 1000, title = 
     }
 
     const parent = stack[stack.length - 1];
+    const elementOpacity = parseOpacity(attrs.opacity, 1);
+    const isHidden =
+      parent.hidden ||
+      attrs.display === 'none' ||
+      attrs.visibility === 'hidden' ||
+      elementOpacity <= 0;
+
     const ctx: StyleContext = {
       fill: attrs.fill ?? parent.fill,
       stroke: attrs.stroke ?? parent.stroke,
@@ -526,6 +589,16 @@ export function convertSvgToVectorEps(svg: string, artboardSize = 1000, title = 
       fillRule: attrs['fill-rule'] ?? parent.fillRule,
       strokeLinecap: attrs['stroke-linecap'] ?? parent.strokeLinecap,
       strokeLinejoin: attrs['stroke-linejoin'] ?? parent.strokeLinejoin,
+      opacity: parent.opacity * elementOpacity,
+      fillOpacity:
+        attrs['fill-opacity'] !== undefined
+          ? parseOpacity(attrs['fill-opacity'], 1)
+          : parent.fillOpacity,
+      strokeOpacity:
+        attrs['stroke-opacity'] !== undefined
+          ? parseOpacity(attrs['stroke-opacity'], 1)
+          : parent.strokeOpacity,
+      hidden: isHidden,
       matrix: attrs.transform
         ? mulMatrix(parent.matrix, parseTransform(attrs.transform))
         : parent.matrix,
@@ -535,6 +608,7 @@ export function convertSvgToVectorEps(svg: string, artboardSize = 1000, title = 
       if (!isSelfClose) stack.push(ctx);
       continue;
     }
+    if (ctx.hidden) continue;
 
     const pathSegments: string[] = [];
 
@@ -613,12 +687,12 @@ export function convertSvgToVectorEps(svg: string, artboardSize = 1000, title = 
         // Skip malformed path
       }
     } else if (tag === 'rect') {
-      const x = Number(attrs.x ?? 0);
-      const y = Number(attrs.y ?? 0);
-      const w = Number(attrs.width ?? 0);
-      const h = Number(attrs.height ?? 0);
-      const rx = Math.min(Number(attrs.rx ?? attrs.ry ?? 0), w / 2);
-      const ry = Math.min(Number(attrs.ry ?? attrs.rx ?? 0), h / 2);
+      const x = numAttr(attrs.x, 0);
+      const y = numAttr(attrs.y, 0);
+      const w = numAttr(attrs.width, 0);
+      const h = numAttr(attrs.height, 0);
+      const rx = Math.min(numAttr(attrs.rx ?? attrs.ry, 0), w / 2);
+      const ry = Math.min(numAttr(attrs.ry ?? attrs.rx, 0), h / 2);
       if (w > 0 && h > 0) {
         if (rx > 0 || ry > 0) {
           const k = 0.5522847498;
@@ -665,10 +739,10 @@ export function convertSvgToVectorEps(svg: string, artboardSize = 1000, title = 
         }
       }
     } else if (tag === 'circle' || tag === 'ellipse') {
-      const cx = Number(attrs.cx ?? 0);
-      const cy = Number(attrs.cy ?? 0);
-      const rx = tag === 'circle' ? Number(attrs.r ?? 0) : Number(attrs.rx ?? 0);
-      const ry = tag === 'circle' ? Number(attrs.r ?? 0) : Number(attrs.ry ?? 0);
+      const cx = numAttr(attrs.cx, 0);
+      const cy = numAttr(attrs.cy, 0);
+      const rx = tag === 'circle' ? numAttr(attrs.r, 0) : numAttr(attrs.rx, 0);
+      const ry = tag === 'circle' ? numAttr(attrs.r, 0) : numAttr(attrs.ry, 0);
       if (rx > 0 && ry > 0) {
         const k = 0.5522847498;
         const ox = rx * k;
@@ -705,16 +779,24 @@ export function convertSvgToVectorEps(svg: string, artboardSize = 1000, title = 
         pathSegments.push('closepath');
       }
     } else if (tag === 'line') {
-      const [x1, y1] = toPs(ctx.matrix, Number(attrs.x1 ?? 0), Number(attrs.y1 ?? 0));
-      const [x2, y2] = toPs(ctx.matrix, Number(attrs.x2 ?? 0), Number(attrs.y2 ?? 0));
+      const [x1, y1] = toPs(ctx.matrix, numAttr(attrs.x1, 0), numAttr(attrs.y1, 0));
+      const [x2, y2] = toPs(ctx.matrix, numAttr(attrs.x2, 0), numAttr(attrs.y2, 0));
       pathSegments.push(`${fmt(x1)} ${fmt(y1)} moveto`);
       pathSegments.push(`${fmt(x2)} ${fmt(y2)} lineto`);
     }
 
     if (pathSegments.length > 0) {
-      const fillRgb = parseColor(ctx.fill, gradients);
-      const strokeRgb = parseColor(ctx.stroke, gradients);
-      const strokeW = Math.max(0.1, Number(ctx.strokeWidth ?? 1) * scale);
+      const rawFillRgb = parseColor(ctx.fill, gradients);
+      const rawStrokeRgb = parseColor(ctx.stroke, gradients);
+      const fillAlpha = ctx.opacity * ctx.fillOpacity;
+      const strokeAlpha = ctx.opacity * ctx.strokeOpacity;
+      const fillRgb =
+        rawFillRgb && fillAlpha > 0 ? blendRgbWithAlphaOnWhite(rawFillRgb, fillAlpha) : null;
+      const strokeRgb =
+        rawStrokeRgb && strokeAlpha > 0
+          ? blendRgbWithAlphaOnWhite(rawStrokeRgb, strokeAlpha)
+          : null;
+      const strokeW = Math.max(0.1, numAttr(ctx.strokeWidth, 1) * scale);
 
       if (fillRgb && tag !== 'line' && tag !== 'polyline') {
         psCommands.push('gsave');
@@ -749,7 +831,7 @@ export function convertSvgToVectorEps(svg: string, artboardSize = 1000, title = 
   const safeTitle = title.replace(/[^\x20-\x7E]/g, '');
   const header = [
     '%!PS-Adobe-3.0 EPSF-3.0',
-    `%%Creator: StockForge Studio Vector Compiler`,
+    `%%Creator: ZuumStock Studio Vector Compiler`,
     `%%Title: ${safeTitle}`,
     `%%CreationDate: ${new Date().toISOString()}`,
     `%%BoundingBox: 0 0 ${artboardSize} ${artboardSize}`,

@@ -466,7 +466,7 @@ export async function testProviderConnection(
             model: targetModel,
             contents: 'Reply with OK',
             config: {
-              ...getGeminiThinkingConfig(targetModel),
+              ...getGeminiThinkingConfig(targetModel, 'test'),
             },
           }),
           25000,
@@ -559,7 +559,7 @@ export async function testProviderConnection(
         'Content-Type': 'application/json',
         ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
         ...(slug === 'openrouter'
-          ? { 'HTTP-Referer': process.env.APP_URL || 'http://localhost:3000', 'X-Title': 'StockForge Studio' }
+          ? { 'HTTP-Referer': process.env.APP_URL || 'http://localhost:3000', 'X-Title': 'ZuumStock Studio' }
           : {}),
       },
       body: JSON.stringify({
@@ -612,6 +612,7 @@ export async function testProviderConnection(
 }
 
 export interface GeneratedVectorPayload {
+  artDirection?: string;
   svg: string;
   title: string;
   description: string;
@@ -620,24 +621,86 @@ export interface GeneratedVectorPayload {
   shutterstockCategory: string;
 }
 
-const VECTOR_SYSTEM_INSTRUCTION = `You are a Principal Commercial Stock Vector Illustrator and Metadata Specialist for Adobe Stock and Shutterstock.
-Your task is to create an original, high-craft, commercially sellable vector illustration as clean SVG XML AND accurate stock metadata.
+const STYLE_CRAFT_GUIDES: Record<DesignStyle, string> = {
+  'Flat Geometric':
+    'Modern editorial vector illustration (Adobe Stock / Dribbble bestseller standard). Combine smooth organic cubic Bezier silhouettes (C/S curves) with clean rounded geometric accents (rx/ry). Include 3-step cel-shading (base tone, soft shadow band, crisp specular highlight) and subtle grounding shadows so shapes feel sculptural and alive—never stiff stacked rectangles.',
+  'Isometric Vector':
+    'True 30-degree axonometric isometric perspective (angles aligned to ~30°/150° diagonals). Clearly separate top (brightest), left (midtone), and right (shaded) planes with crisp edge highlights, soft ambient floor shadows, beveled corners, and layered micro-details (screens, foliage, cables, tiles, or floating badges) for architectural depth.',
+  'Minimal Line Art':
+    'Expressive continuous monoline & weighted editorial vector illustration. Use fluid S/C Bezier curves with stroke-linecap="round" and stroke-linejoin="round", varied primary (4–6px) and secondary (2–3px) stroke weights, and subtle offset pastel/duotone accent fills tucked slightly behind key contours for refined commercial polish.',
+  'Duotone Editorial':
+    'Bold magazine-grade editorial vector art using a tight 2-accent + deep ink + warm paper palette. Build expressive, fluid, asymmetrical silhouettes with dynamic negative-space cutouts, sweeping Bezier curves, layered overlapping planes, and crisp graphic contrast.',
+  'Organic Botanical':
+    'Flowing natural curves, graceful tapering stems, overlapping translucent petals/leaves (using harmonious opacity layers and soft gradients), delicate curved midribs/veins, and asymmetrical organic balance. Zero stiff straight-edged polygons.',
+  'Gradient Mesh Vector':
+    'Luminous modern commercial 3D-feel vector using rich multi-stop <linearGradient> and <radialGradient> definitions in <defs>. Layer soft directional light gradients, subtle glossy rim highlights, overlapping depth planes, and soft ambient halo shapes—using pure vector paths and opacity (NO <filter> blur).',
+  'Bold Emblem':
+    'High-impact commercial badge, crest, or brand-ready vector mark. Use confident silhouette hierarchy, balanced symmetry or dynamic heraldic framing, clean inner negative-space cuts, crisp highlight bevels, and unmistakable readability at both 64px thumbnail and billboard scale.',
+  'Technical Blueprint':
+    'Precision engineering & architectural schematic aesthetic. Use crisp drafting lines, subtle fine coordinate grid backdrop, detailed orthographic/isometric cutaway components, clean concentric rings, and geometric callout ticks/markers (pure vector lines/dots—NO <text>).',
+};
 
-STRICT SVG ENGINEERING RULES:
-1. Output a single standalone <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"> element.
-2. EVERY visual element MUST be genuine editable vector geometry (<path>, <circle>, <rect>, <ellipse>, <polygon>, <polyline>, <line>, organized inside clean <g> layer groups, optional <defs> with <linearGradient>/<radialGradient>).
-3. NEVER include <image>, data:image/*, <foreignObject>, <script>, onload/onclick handlers, external URLs, or <text> elements (unless outlined as paths — prefer pure vector shapes without <text>).
-4. Craft rich, layered, balanced compositions on the 1000x1000 artboard (10 to 45 crisp vector primitives with cohesive color harmonies, highlights, shadows, and clean silhouettes).
-5. Avoid sloppy overlapping shapes or empty canvases; fill 65%-85% of the artboard cleanly with strong figure-ground contrast.
+const CATEGORY_COMPOSITION_GUIDES: Record<StockCategory, string> = {
+  Abstract: 'Build rhythmic sweeping Bezier ribbons, layered translucent waves, or balanced sculptural forms with dynamic motion and depth.',
+  Business: 'Craft approachable modern editorial characters/objects with natural curved posture, clean SaaS devices, charts, or collaborative symbols—never rigid stick figures.',
+  Technology: 'Combine sleek curved hardware/cloud/AI motifs with crisp glowing nodes, data streams, and clean layered gradients.',
+  Education: 'Create warm, inviting academic or learning compositions with dimensional books, globes, botanicals, or creative tools arranged with strong focal hierarchy.',
+  Animals: 'Sculpt expressive, anatomical, fluid animal silhouettes using smooth Bezier curves, layered fur/feather/wing tufts, expressive eyes with catchlight highlights, and graceful posture.',
+  Nature: 'Layer atmospheric foreground, midground, and horizon depth with curved hills, organic clouds, flowing water ribbons, and lush foliage.',
+  Food: 'Use appetizing organic silhouettes, soft glossy specular highlights, layered toppings/ingredients, subtle steam ribbons, and warm natural tones.',
+  Medical: 'Balance precision clarity with reassuring organic forms, clean layered anatomy/lab/wellness motifs, and trustworthy teal/cobalt/coral harmonies.',
+  Objects: 'Render hero products/items in appealing 3/4 or dynamic angle with crisp volume shading, cast ground shadow, material highlights, and supporting props.',
+  Backgrounds: 'Fill the canvas seamlessly (100% edge-to-edge coverage) with flowing layered waves, organic gradients, or rhythmic geometric depth planes suitable as commercial wallpaper/backdrop.',
+  Icons: 'Keep optical weight balanced across a clean centered grid with generous padding (100px margin), crisp silhouettes, subtle layered shading, and unmistakable legibility.',
+  Patterns: 'Compose a harmonious repeating-ready motif grid across the canvas with balanced spacing, primary/secondary motifs, and tiny rhythmic filler accents.',
+  Custom: 'Tailor the composition dynamically to the exact subject with strong focal hierarchy, layered depth, and editorial polish.',
+};
 
-STRICT STOCK METADATA RULES:
-- title: 45-120 characters, clear commercial description, NO trademarked brands, NO words like "vector", "eps", "svg", "ai generated".
-- description: 80-200 characters describing subject, style, mood, and commercial usage.
-- keywords: 18-35 unique, single or two-word lowercase tags directly describing the subject, style, colors, and concepts (NO keyword stuffing, NO duplicates).
-- adobeCategory: Pick the single best Adobe Stock category (Abstract, Animals, Business, Education, Food, Graphic Resources, Landscapes, Lifestyle, Medical, Nature, Objects, Science, Technology, Transport).
-- shutterstockCategory: Pick the single best Shutterstock category (Abstract, Animals/Wildlife, Backgrounds/Textures, Business/Finance, Education, Food and Drink, Healthcare/Medical, Icons, Nature, Objects, Science, Technology).
+const VECTOR_SYSTEM_INSTRUCTION = `You are a Principal Commercial Stock Vector Illustrator and Creative Director whose portfolio ranks in the top 1% on Adobe Stock and Shutterstock.
+Your task is to create an original, ultra-polished, fluid, commercially sellable vector illustration as clean SVG XML AND accurate marketplace metadata.
+
+DESIGN & ANTI-STIFFNESS CRAFT STANDARDS (CRITICAL):
+1. FLUID BEZIER MASTERY: Never produce stiff, robotic, boxy, or amateur clipart. Use smooth cubic Bezier curves (<path d="... C ... S ... Z">) for organic silhouettes, rounded postures, flowing folds, leaves, waves, and anatomical contours.
+2. LAYERED DEPTH ARCHITECTURE: Organize the <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"> into clean semantic <g> layers in back-to-front order:
+   - <g id="backdrop"> (subtle organic blob, radial halo, or atmospheric shape—keep canvas clean & isolated unless Category is Backgrounds/Patterns)
+   - <g id="cast-shadow"> (soft tinted ground/ambient shadow, e.g. fill="#0F172A" opacity="0.10", never harsh solid #000000)
+   - <g id="subject-base"> (primary hero silhouettes with rich <linearGradient>/<radialGradient> or harmonious base tones)
+   - <g id="shading-highlights"> (cel-shaded shadow crescents, midtone planes, glossy specular highlights, rim-light curves)
+   - <g id="detail-accents"> (crisp secondary props, floating geometric/botanical accents, fine surface lines with stroke-linecap="round")
+3. RICHNESS & PROPORTION: Aim for 24 to 55 carefully crafted vector primitives (predominantly expressive <path> elements with smooth C/S curves). Frame the hero composition cleanly inside 68%–86% of the 1000x1000 artboard with balanced margins (never clipped at edges unless Category is Backgrounds/Patterns).
+4. CURATED COLOR HARMONY: Select a cohesive, modern editorial palette (1 dominant tone, 1-2 supporting analogous/complementary tones, soft neutral highlights, and deep tinted shadows like #0F172A or #1E1B4B instead of pure black #000000). Define reusable <linearGradient> and <radialGradient> in <defs>.
+5. STRICT EPS & MARKETPLACE PURITY:
+   - Output ONLY pure editable vector geometry: <path>, <circle>, <rect>, <ellipse>, <polygon>, <polyline>, <line>, <g>, <defs>, <linearGradient>, <radialGradient>, <stop>.
+   - NEVER use <image>, data:image/*, <foreignObject>, <script>, event handlers, external URLs, <filter> (no blur/drop-shadow SVG filters—simulate soft depth purely with gradients and translucent vector shapes), or <text>.
+   - Never leave orphan strokes, unclosed accidental fills, or overlapping z-fighting shapes.
+
+STOCK METADATA RULES:
+- title: 45-120 characters, clear commercial English description, NO trademarked brands, NO words like "vector", "eps", "svg", "ai generated".
+- description: 80-200 characters describing subject, style, mood, and commercial use cases.
+- keywords: 22-40 unique lowercase single or two-word tags directly relevant to the artwork (NO duplicates, NO keyword stuffing).
+- adobeCategory: Pick best single match from (Abstract, Animals, Business, Education, Food, Graphic Resources, Landscapes, Lifestyle, Medical, Nature, Objects, Science, Technology, Transport).
+- shutterstockCategory: Pick best single match from (Abstract, Animals/Wildlife, Backgrounds/Textures, Business/Finance, Education, Food and Drink, Healthcare/Medical, Icons, Nature, Objects, Science, Technology).
 
 Return ONLY valid JSON matching the requested schema.`;
+
+function analyzeQuickVectorQuality(svg: string): {
+  primitives: number;
+  paths: number;
+  curves: number;
+} {
+  const count = (tag: string) => (svg.match(new RegExp(`<\\s*${tag}\\b`, 'gi')) || []).length;
+  const paths = count('path');
+  const primitives =
+    paths +
+    count('circle') +
+    count('rect') +
+    count('ellipse') +
+    count('polygon') +
+    count('polyline') +
+    count('line');
+  const curves = (svg.match(/[CSQAcsqa]/g) || []).length;
+  return { primitives, paths, curves };
+}
 
 export async function generateVectorAssetWithProvider(params: {
   providerSlug: ProviderSlug;
@@ -658,13 +721,16 @@ export async function generateVectorAssetWithProvider(params: {
     );
   }
 
+  const styleGuide = STYLE_CRAFT_GUIDES[params.style] || '';
+  const categoryGuide = CATEGORY_COMPOSITION_GUIDES[params.category] || '';
+
   const userPrompt = [
     `Subject Prompt: ${params.prompt}`,
-    `Stock Category: ${params.category}`,
-    `Visual Style: ${params.style}`,
+    `Stock Category: ${params.category} — ${categoryGuide}`,
+    `Visual Style: ${params.style} — ${styleGuide}`,
     `Target Marketplace: ${params.targetPlatform === 'both' ? 'Adobe Stock & Shutterstock' : params.targetPlatform}`,
     params.variationDirective ? `Unique Variation Directive: ${params.variationDirective}` : '',
-    'Produce an original, publication-grade editable SVG (viewBox="0 0 1000 1000") and commercial stock metadata JSON.',
+    'First populate "artDirection" with your palette hex codes, focal layout plan, Bezier curve flow, light direction, and layer breakdown, then synthesize the publication-grade editable <svg viewBox="0 0 1000 1000"> and marketplace metadata.',
   ]
     .filter(Boolean)
     .join('\n');
@@ -677,23 +743,28 @@ export async function generateVectorAssetWithProvider(params: {
       httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
     });
 
-    try {
+    const invokeGemini = async (promptContent: string, thinkingMode: 'generate' | 'refine' = 'generate') => {
       const response = await withTransient503Retry(() =>
         withTimeout(
           ai.models.generateContent({
             model,
-            contents: userPrompt,
+            contents: promptContent,
             config: {
               systemInstruction: VECTOR_SYSTEM_INSTRUCTION,
               responseMimeType: 'application/json',
-              ...getGeminiThinkingConfig(model),
+              ...getGeminiThinkingConfig(model, thinkingMode),
               responseSchema: {
                 type: Type.OBJECT,
                 properties: {
+                  artDirection: {
+                    type: Type.STRING,
+                    description:
+                      'Brief visual blueprint: 5 curated palette hex colors, light angle, focal proportions, Bezier silhouette flow, and 5 semantic SVG layers.',
+                  },
                   svg: {
                     type: Type.STRING,
                     description:
-                      'Complete standalone <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">...</svg> code.',
+                      'Complete high-detail standalone <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">...</svg> artwork with 24-55 layered primitives, smooth C/S Bezier curves, gradients, shading, and highlights.',
                   },
                   title: { type: Type.STRING },
                   description: { type: Type.STRING },
@@ -705,6 +776,7 @@ export async function generateVectorAssetWithProvider(params: {
                   shutterstockCategory: { type: Type.STRING },
                 },
                 required: [
+                  'artDirection',
                   'svg',
                   'title',
                   'description',
@@ -716,7 +788,9 @@ export async function generateVectorAssetWithProvider(params: {
             },
           }),
           50000,
-          `Gemini generation timed out after 50s on model "${model}". Try switching to "gemini-3.1-flash-lite".`
+          model === 'gemini-3.1-flash-lite'
+            ? `Gemini generation timed out after 50s on model "${model}". Try retrying or switching to Groq / OpenRouter in AI Providers.`
+            : `Gemini generation timed out after 50s on model "${model}". Try switching to "gemini-3.1-flash-lite".`
         )
       );
 
@@ -724,7 +798,40 @@ export async function generateVectorAssetWithProvider(params: {
       if (!rawText) {
         throw new Error('Gemini returned an empty response.');
       }
-      const parsed = parseJsonPayload(rawText);
+      return parseJsonPayload(rawText);
+    };
+
+    try {
+      let parsed = await invokeGemini(userPrompt, 'generate');
+
+      // Automatic quality elevation pass only when output is genuinely sparse or stiff (skip on 20-RPD capped model)
+      const q = analyzeQuickVectorQuality(parsed.svg);
+      const needsPolish =
+        model !== 'gemini-4-hydrogen' &&
+        ((q.primitives < 12 && q.curves < 25) ||
+          (params.category !== 'Icons' && q.paths < 3 && q.curves < 15));
+
+      if (needsPolish) {
+        try {
+          const refinePrompt = [
+            userPrompt,
+            `\nYour previous SVG draft was too sparse/stiff (${q.primitives} primitives, ${q.paths} paths).`,
+            'Elevate it into a flagship Adobe Stock / Shutterstock bestseller:',
+            '- Replace rigid straight rectangles/triangles with fluid organic cubic Bezier <path> curves (C/S commands).',
+            '- Add layered depth: backdrop atmosphere, soft translucent cast shadow, gradient fills (<linearGradient>/<radialGradient>), cel-shaded shadow crescents, glossy rim highlights, and crisp foreground micro-details.',
+            '- Target 26 to 55 clean, expressive primitives on the 1000x1000 artboard.',
+            `Draft to upgrade:\n${parsed.svg.slice(0, 6000)}`,
+          ].join('\n');
+          const refined = await invokeGemini(refinePrompt, 'refine');
+          const qRefined = analyzeQuickVectorQuality(refined.svg);
+          if (qRefined.primitives >= q.primitives) {
+            parsed = refined;
+          }
+        } catch {
+          // Keep initial valid draft if refinement fails/times out
+        }
+      }
+
       const latencyMs = Date.now() - start;
       updateProviderRecordStatus(params.providerSlug, 'connected', null, null);
       return { payload: parsed, latencyMs, modelUsed: model };
@@ -756,10 +863,10 @@ export async function generateVectorAssetWithProvider(params: {
         role: 'user',
         content:
           userPrompt +
-          '\n\nRespond ONLY with a single JSON object with keys: "svg", "title", "description", "keywords" (string[]), "adobeCategory", "shutterstockCategory".',
+          '\n\nRespond ONLY with a single JSON object with keys in this exact order: "artDirection", "svg", "title", "description", "keywords" (string[]), "adobeCategory", "shutterstockCategory".',
       },
     ],
-    max_tokens: 4096,
+    max_tokens: 8192,
   };
 
   if (
@@ -778,7 +885,7 @@ export async function generateVectorAssetWithProvider(params: {
       ...(params.providerSlug === 'openrouter'
         ? {
             'HTTP-Referer': process.env.APP_URL || 'http://localhost:3000',
-            'X-Title': 'StockForge Studio',
+            'X-Title': 'ZuumStock Studio',
           }
         : {}),
     },
@@ -860,7 +967,7 @@ Return JSON with: title (45-120 chars), description (80-200 chars), keywords (ar
           contents: promptText,
           config: {
             responseMimeType: 'application/json',
-            ...getGeminiThinkingConfig(model),
+            ...getGeminiThinkingConfig(model, 'test'),
             responseSchema: {
               type: Type.OBJECT,
               properties: {
@@ -958,12 +1065,24 @@ function parseJsonPayload(raw: string): GeneratedVectorPayload {
   };
 }
 
-function getGeminiThinkingConfig(model: string): { thinkingConfig?: { thinkingLevel: ThinkingLevel } } {
+function getGeminiThinkingConfig(
+  model: string,
+  mode: 'test' | 'generate' | 'refine' = 'generate'
+): { thinkingConfig?: { thinkingLevel: ThinkingLevel } } {
+  if (mode === 'test') {
+    if (model === 'gemini-3.1-flash-lite') {
+      return { thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } };
+    }
+    if (model.startsWith('gemini-4-') || model.startsWith('gemini-3')) {
+      return { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } };
+    }
+    return {};
+  }
   if (model === 'gemini-3.1-flash-lite') {
-    return { thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } };
+    return { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } };
   }
   if (model.startsWith('gemini-4-') || model.startsWith('gemini-3')) {
-    return { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } };
+    return { thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM } };
   }
   return {};
 }
