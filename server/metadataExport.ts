@@ -1,4 +1,4 @@
-import type { StockAsset, StockCategory } from '../src/types/stockforge.ts';
+import type { StockAsset, StockCategory } from '../src/types/stockforge.js';
 
 export const ADOBE_STOCK_CATEGORIES = [
   'Abstract',

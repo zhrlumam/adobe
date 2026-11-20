@@ -9,22 +9,23 @@ import type {
   StockAsset,
   StockCategory,
   TargetPlatform,
-} from '../src/types/stockforge.ts';
+} from '../src/types/stockforge.js';
 import {
   ASSETS_DIR,
+  IS_SERVERLESS,
   addProductionLog,
   db,
   getSettings,
   mapAssetRow,
   mapBatchRow,
-} from './db.ts';
+} from './db.js';
 import {
   mapDefaultAdobeCategory,
   mapDefaultShutterstockCategory,
   normalizeKeywords,
-} from './metadataExport.ts';
-import { generateVectorAssetWithProvider } from './providers.ts';
-import { sanitizeAndValidateSvg } from './svgEngine.ts';
+} from './metadataExport.js';
+import { generateVectorAssetWithProvider } from './providers.js';
+import { sanitizeAndValidateSvg } from './svgEngine.js';
 
 const VARIATION_ANGLES = [
   'centered heroic emblem composition with bold silhouette',
@@ -249,7 +250,11 @@ export function createBatchJob(params: {
     message: `Created batch ${id} with ${count} items (concurrency ${concurrency})`,
   });
 
-  startBatchWorker(id);
+  if (IS_SERVERLESS) {
+    db.prepare(`UPDATE batches SET status = 'running', updated_at = ? WHERE id = ?`).run(now, id);
+  } else {
+    startBatchWorker(id);
+  }
   return getBatchJob(id)!;
 }
 
@@ -326,7 +331,14 @@ export function resumeBatchJob(id: string, retryFailed = false): BatchJob | null
     now,
     id
   );
-  startBatchWorker(id);
+  if (IS_SERVERLESS) {
+    db.prepare(`UPDATE batches SET status = 'running', finished_at = NULL, updated_at = ? WHERE id = ?`).run(
+      now,
+      id
+    );
+  } else {
+    startBatchWorker(id);
+  }
   return getBatchJob(id);
 }
 
@@ -496,3 +508,110 @@ export function startBatchWorker(batchId: string): void {
     }
   })();
 }
+
+export async function processBatchStep(batchId: string): Promise<BatchJob | null> {
+  const batch = getBatchJob(batchId, false);
+  if (!batch) return null;
+  if (batch.status === 'paused' || batch.status === 'cancelled' || batch.status === 'completed') {
+    return getBatchJob(batchId, true);
+  }
+
+  const nowStart = new Date().toISOString();
+  db.prepare(`UPDATE batches SET status = 'running', updated_at = ? WHERE id = ?`).run(
+    nowStart,
+    batchId
+  );
+
+  const nextItem = db
+    .prepare(
+      `SELECT * FROM batch_items WHERE batch_id = ? AND status = 'pending' ORDER BY seq_index ASC LIMIT 1`
+    )
+    .get(batchId) as Record<string, unknown> | undefined;
+
+  if (!nextItem) {
+    syncBatchCounters(batchId);
+    const updated = getBatchJob(batchId, false);
+    if (updated) {
+      const finalStatus =
+        updated.completedCount === 0 && updated.failedCount > 0 ? 'failed' : 'completed';
+      db.prepare(`UPDATE batches SET status = ?, finished_at = ?, updated_at = ? WHERE id = ?`).run(
+        finalStatus,
+        new Date().toISOString(),
+        new Date().toISOString(),
+        batchId
+      );
+    }
+    return getBatchJob(batchId, true);
+  }
+
+  const settings = getSettings();
+  const itemId = Number(nextItem.id);
+  const attempts = Number(nextItem.attempts) + 1;
+
+  db.prepare(`UPDATE batch_items SET status = 'generating', updated_at = ? WHERE id = ?`).run(
+    new Date().toISOString(),
+    itemId
+  );
+
+  try {
+    const result = await generateAndPersistSingleAsset({
+      prompt: batch.basePrompt,
+      variationDirective: String(nextItem.variation_prompt),
+      category: batch.category,
+      style: batch.style,
+      targetPlatform: batch.targetPlatform,
+      providerSlug: batch.providerSlug,
+      model: batch.model,
+      batchId,
+      checkDuplicate: settings.preventDuplicates,
+    });
+
+    if (result.isDuplicate && settings.preventDuplicates && attempts <= settings.maxRetries) {
+      db.prepare(
+        `UPDATE batches SET duplicate_skipped_count = duplicate_skipped_count + 1 WHERE id = ?`
+      ).run(batchId);
+      db.prepare('DELETE FROM assets WHERE id = ?').run(result.asset.id);
+      const dupPath = path.join(ASSETS_DIR, result.asset.svgFilename);
+      if (fs.existsSync(dupPath)) fs.unlinkSync(dupPath);
+      db.prepare(
+        `UPDATE batch_items SET status = 'pending', attempts = ?, error_message = ?, updated_at = ? WHERE id = ?`
+      ).run(attempts, 'Duplicate geometry avoided; retrying variation.', new Date().toISOString(), itemId);
+    } else {
+      db.prepare(
+        `UPDATE batch_items SET status = 'completed', attempts = ?, asset_id = ?, error_message = NULL, updated_at = ? WHERE id = ?`
+      ).run(attempts, result.asset.id, new Date().toISOString(), itemId);
+    }
+  } catch (err) {
+    const lastErr = err instanceof Error ? err.message : String(err);
+    const shouldRetry = attempts <= settings.maxRetries && !lastErr.toLowerCase().includes('requests/day limit');
+    db.prepare(
+      `UPDATE batch_items SET status = ?, attempts = ?, error_message = ?, updated_at = ? WHERE id = ?`
+    ).run(shouldRetry ? 'pending' : 'failed', attempts, lastErr, new Date().toISOString(), itemId);
+  }
+
+  syncBatchCounters(batchId);
+
+  const remaining = (
+    db
+      .prepare(
+        `SELECT COUNT(*) as c FROM batch_items WHERE batch_id = ? AND status IN ('pending', 'generating', 'retrying')`
+      )
+      .get(batchId) as { c: number }
+  ).c;
+
+  if (remaining === 0) {
+    const updated = getBatchJob(batchId, false);
+    const finalStatus =
+      updated && updated.completedCount === 0 && updated.failedCount > 0 ? 'failed' : 'completed';
+    const doneNow = new Date().toISOString();
+    db.prepare(`UPDATE batches SET status = ?, finished_at = ?, updated_at = ? WHERE id = ?`).run(
+      finalStatus,
+      doneNow,
+      doneNow,
+      batchId
+    );
+  }
+
+  return getBatchJob(batchId, true);
+}
+

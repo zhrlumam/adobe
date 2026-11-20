@@ -51,10 +51,14 @@ export const BatchView: React.FC<BatchViewProps> = ({
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [exportingZip, setExportingZip] = useState(false);
+  const [isServerless, setIsServerless] = useState(false);
 
   const loadBatches = async () => {
     try {
       const data = await api.getBatches();
+      if (typeof data?.isServerless === 'boolean') {
+        setIsServerless(data.isServerless);
+      }
       const nextBatches = Array.isArray(data?.batches) ? data.batches : [];
       setBatches(nextBatches);
       if (selectedBatch) {
@@ -87,15 +91,39 @@ export const BatchView: React.FC<BatchViewProps> = ({
     void loadBatches();
   }, []);
 
-  // Poll every 2.5s while any batch is running/queued
+  // Poll or step sequentially while any batch is running/queued
   useEffect(() => {
-    const hasActive = batches.some((b) => b.status === 'running' || b.status === 'queued');
-    if (!hasActive) return;
-    const timer = window.setInterval(() => {
-      void loadBatches();
-    }, 2500);
-    return () => window.clearInterval(timer);
-  }, [batches, selectedBatch?.id]);
+    const activeBatch = batches.find((b) => b.status === 'running' || b.status === 'queued');
+    if (!activeBatch) return;
+
+    if (!isServerless) {
+      const timer = window.setInterval(() => {
+        void loadBatches();
+      }, 2500);
+      return () => window.clearInterval(timer);
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await api.stepBatch(activeBatch.id);
+        if (!cancelled && res?.batch) {
+          setBatches((prev) =>
+            prev.map((b) => (b.id === res.batch.id ? { ...b, ...res.batch } : b))
+          );
+          if (selectedBatch?.id === res.batch.id) {
+            setSelectedBatch(res.batch);
+          }
+        }
+      } catch {
+        // ignore transient step error
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [batches, selectedBatch?.id, isServerless]);
 
   const handleSelectBatch = async (id: string) => {
     try {

@@ -7,7 +7,7 @@ import type {
   ProviderStatus,
   StockCategory,
   TargetPlatform,
-} from '../src/types/stockforge.ts';
+} from '../src/types/stockforge.js';
 import {
   addProductionLog,
   db,
@@ -15,7 +15,7 @@ import {
   maskApiKey,
   setProviderApiKey,
   updateProviderRecordStatus,
-} from './db.ts';
+} from './db.js';
 
 export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
   {

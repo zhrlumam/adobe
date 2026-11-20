@@ -168,7 +168,7 @@ export const api = {
   deleteAsset: (id: string) =>
     apiJson<{ ok: boolean }>(`/api/assets/${id}`, { method: 'DELETE' }),
 
-  getBatches: () => apiJson<{ batches: BatchJob[] }>('/api/batches'),
+  getBatches: () => apiJson<{ batches: BatchJob[]; isServerless?: boolean }>('/api/batches'),
 
   createBatch: (payload: {
     name: string;
@@ -181,12 +181,18 @@ export const api = {
     providerSlug?: ProviderSlug;
     model?: string;
   }) =>
-    apiJson<{ batch: BatchJob }>('/api/batches', {
+    apiJson<{ batch: BatchJob; isServerless?: boolean }>('/api/batches', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
 
-  getBatch: (id: string) => apiJson<{ batch: BatchJob }>(`/api/batches/${id}`),
+  getBatch: (id: string) =>
+    apiJson<{ batch: BatchJob; isServerless?: boolean }>(`/api/batches/${id}`),
+
+  stepBatch: (id: string) =>
+    apiJson<{ batch: BatchJob; isServerless?: boolean }>(`/api/batches/${id}/step`, {
+      method: 'POST',
+    }),
 
   pauseBatch: (id: string) =>
     apiJson<{ batch: BatchJob }>(`/api/batches/${id}/pause`, { method: 'POST' }),

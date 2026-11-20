@@ -1,6 +1,8 @@
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
+import os from 'node:os';
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
 import type {
   BatchItem,
   BatchJob,
@@ -9,9 +11,21 @@ import type {
   ProviderStatus,
   StockAsset,
   SystemSettings,
-} from '../src/types/stockforge.ts';
+} from '../src/types/stockforge.js';
 
-export const DATA_DIR = path.resolve(process.cwd(), 'data');
+export const IS_SERVERLESS = Boolean(
+  process.env.VERCEL ||
+    process.env.VERCEL_ENV ||
+    process.env.AWS_LAMBDA_FUNCTION_NAME ||
+    process.env.NOW_REGION
+);
+
+export const DATA_DIR = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : IS_SERVERLESS
+  ? path.join(os.tmpdir(), 'stockforge-data')
+  : path.resolve(process.cwd(), 'data');
+
 export const ASSETS_DIR = path.join(DATA_DIR, 'assets');
 export const BACKUPS_DIR = path.join(DATA_DIR, 'backups');
 export const DB_PATH = path.join(DATA_DIR, 'stockforge.db');
@@ -21,8 +35,24 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(ASSETS_DIR, { recursive: true });
 fs.mkdirSync(BACKUPS_DIR, { recursive: true });
 
-export const db = new DatabaseSync(DB_PATH);
-db.exec('PRAGMA journal_mode = WAL;');
+const require = createRequire(import.meta.url);
+let DatabaseSyncCtor: typeof DatabaseSyncType;
+try {
+  ({ DatabaseSync: DatabaseSyncCtor } = require('node:sqlite') as {
+    DatabaseSync: typeof DatabaseSyncType;
+  });
+} catch (err) {
+  throw new Error(
+    `SQLite initialization failed on Node ${process.version}. Set Node.js Version to 22.x in Vercel Project Settings -> General. (${err instanceof Error ? err.message : String(err)})`
+  );
+}
+
+export const db = new DatabaseSyncCtor(DB_PATH);
+try {
+  db.exec('PRAGMA journal_mode = WAL;');
+} catch {
+  // Serverless /tmp filesystems may prefer default journal mode
+}
 db.exec('PRAGMA foreign_keys = ON;');
 
 db.exec(`

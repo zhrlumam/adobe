@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import JSZip from 'jszip';
-import { ASSETS_DIR, BACKUPS_DIR, DB_PATH, addProductionLog, db } from './db.ts';
+import { ASSETS_DIR, BACKUPS_DIR, DB_PATH, addProductionLog, db } from './db.js';
 
 export async function createLocalBackupArchive(): Promise<{
   filename: string;

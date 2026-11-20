@@ -209,4 +209,5 @@ export interface DashboardSummary {
   recentAssets: StockAsset[];
   recentLogs: ProductionLogEntry[];
   categoryBreakdown: { category: string; count: number }[];
+  isServerless?: boolean;
 }

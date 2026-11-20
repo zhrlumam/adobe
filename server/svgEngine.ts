@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { Resvg } from '@resvg/resvg-js';
 import sharp from 'sharp';
 import { SVGPathData } from 'svg-pathdata';
-import type { SvgValidationReport } from '../src/types/stockforge.ts';
+import type { SvgValidationReport } from '../src/types/stockforge.js';
 
 /**
  * Strips unsafe scripts, event handlers, foreignObject, external hrefs,
