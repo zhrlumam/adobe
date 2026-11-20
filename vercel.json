@@ -3,13 +3,21 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "functions": {
-    "api/**/*.ts": {
+    "api/index.ts": {
       "maxDuration": 60
     }
   },
   "rewrites": [
     {
-      "source": "/((?!api(?:/|$)).*)",
+      "source": "/api/:path*",
+      "destination": "/api/index?__sf_path=:path*"
+    },
+    {
+      "source": "/api",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/((?!api/).*)",
       "destination": "/index.html"
     }
   ]

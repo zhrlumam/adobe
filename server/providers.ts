@@ -460,16 +460,18 @@ export async function testProviderConnection(
         apiKey: apiKey!,
         httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
       });
-      const response = await withTimeout(
-        ai.models.generateContent({
-          model: targetModel,
-          contents: 'Reply with OK',
-          config: {
-            ...getGeminiThinkingConfig(targetModel),
-          },
-        }),
-        25000,
-        `Gemini connection test timed out after 25s for model "${targetModel}".`
+      const response = await withTransient503Retry(() =>
+        withTimeout(
+          ai.models.generateContent({
+            model: targetModel,
+            contents: 'Reply with OK',
+            config: {
+              ...getGeminiThinkingConfig(targetModel),
+            },
+          }),
+          25000,
+          `Gemini connection test timed out after 25s for model "${targetModel}".`
+        )
       );
       if (!response.text) {
         throw new Error('Empty response returned from Gemini API.');
@@ -676,44 +678,46 @@ export async function generateVectorAssetWithProvider(params: {
     });
 
     try {
-      const response = await withTimeout(
-        ai.models.generateContent({
-          model,
-          contents: userPrompt,
-          config: {
-            systemInstruction: VECTOR_SYSTEM_INSTRUCTION,
-            responseMimeType: 'application/json',
-            ...getGeminiThinkingConfig(model),
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                svg: {
-                  type: Type.STRING,
-                  description:
-                    'Complete standalone <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">...</svg> code.',
+      const response = await withTransient503Retry(() =>
+        withTimeout(
+          ai.models.generateContent({
+            model,
+            contents: userPrompt,
+            config: {
+              systemInstruction: VECTOR_SYSTEM_INSTRUCTION,
+              responseMimeType: 'application/json',
+              ...getGeminiThinkingConfig(model),
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  svg: {
+                    type: Type.STRING,
+                    description:
+                      'Complete standalone <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">...</svg> code.',
+                  },
+                  title: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                  keywords: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                  },
+                  adobeCategory: { type: Type.STRING },
+                  shutterstockCategory: { type: Type.STRING },
                 },
-                title: { type: Type.STRING },
-                description: { type: Type.STRING },
-                keywords: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                },
-                adobeCategory: { type: Type.STRING },
-                shutterstockCategory: { type: Type.STRING },
+                required: [
+                  'svg',
+                  'title',
+                  'description',
+                  'keywords',
+                  'adobeCategory',
+                  'shutterstockCategory',
+                ],
               },
-              required: [
-                'svg',
-                'title',
-                'description',
-                'keywords',
-                'adobeCategory',
-                'shutterstockCategory',
-              ],
             },
-          },
-        }),
-        50000,
-        `Gemini generation timed out after 50s on model "${model}". Try switching to "gemini-3.1-flash-lite".`
+          }),
+          50000,
+          `Gemini generation timed out after 50s on model "${model}". Try switching to "gemini-3.1-flash-lite".`
+        )
       );
 
       const rawText = (response.text ?? '').trim();
@@ -978,6 +982,20 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, timeoutMessage: s
   }
 }
 
+async function withTransient503Retry<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    const status = extractHttpStatus(err);
+    const raw = (err instanceof Error ? err.message : String(err)).toLowerCase();
+    if (status === 503 || raw.includes('high demand') || raw.includes('unavailable')) {
+      await new Promise((r) => setTimeout(r, 1500));
+      return await fn();
+    }
+    throw err;
+  }
+}
+
 function extractHttpStatus(err: unknown): number | undefined {
   if (err && typeof err === 'object' && 'status' in err && typeof (err as { status: unknown }).status === 'number') {
     return (err as { status: number }).status;
@@ -1029,7 +1047,7 @@ function formatUpstreamError(err: unknown, providerSlug: string, model: string):
       const limitMatch = raw.match(/limit:\s*(\d+)/i);
       const retryMatch = raw.match(/retry in ([0-9hms.]+)/i);
       const limitHint = limitMatch ? ` (${limitMatch[1]} requests/day limit)` : '';
-      const cleanRetry = retryMatch ? retryMatch[1].replace(/\.\d+s$/i, 's') : '';
+      const cleanRetry = retryMatch ? retryMatch[1].replace(/\.\d+s\.?$/i, 's') : '';
       const retryHint = cleanRetry ? ` Retry resets in ~${cleanRetry}.` : '';
       return `Gemini 429 RESOURCE_EXHAUSTED: Free-tier quota reached for "${model}"${limitHint}.${retryHint} Switch model to "gemini-3.1-flash-lite" or activate Groq / OpenRouter in AI Providers.`;
     }
@@ -1037,6 +1055,9 @@ function formatUpstreamError(err: unknown, providerSlug: string, model: string):
   }
 
   if (Number(code) === 503 || lower.includes('unavailable') || lower.includes('high demand')) {
+    if (providerSlug === 'gemini' && model === 'gemini-3.1-flash-lite') {
+      return `Gemini 503 Unavailable: "${model}" is temporarily experiencing high upstream demand. Retry in a few seconds or switch to Groq / OpenRouter in AI Providers.`;
+    }
     return `${providerSlug} 503 Unavailable: "${model}" is experiencing high upstream demand. Switch to "gemini-3.1-flash-lite" or another provider.`;
   }
 

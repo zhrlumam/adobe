@@ -407,13 +407,13 @@ export const ProvidersView: React.FC<ProvidersViewProps> = ({
 
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                    Or Custom Model ID Override
+                    Custom Model ID Override (Optional)
                   </label>
                   <input
                     type="text"
                     value={customModelInput}
                     onChange={(e) => setCustomModelInput(e.target.value)}
-                    placeholder="e.g. qwen2.5-coder:14b"
+                    placeholder="Leave blank to use selected model"
                     className="w-full px-3 py-2 text-xs font-mono border border-slate-200 rounded-md focus:outline-none focus:border-[#2563EB]"
                   />
                 </div>

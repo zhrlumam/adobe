@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import os from 'node:os';
@@ -231,6 +232,56 @@ const ENV_KEY_MAP: Record<ProviderSlug, string | undefined> = {
   custom: undefined,
 };
 
+const REQUEST_SECRETS_COOKIE = 'sf_prov_keys';
+const requestSecretsStore = new AsyncLocalStorage<Record<string, string>>();
+
+export function parseRequestSecretsCookie(cookieHeader?: string): Record<string, string> {
+  if (!cookieHeader) return {};
+  try {
+    const parts = cookieHeader.split(';');
+    for (const part of parts) {
+      const idx = part.indexOf('=');
+      if (idx <= 0) continue;
+      const name = part.slice(0, idx).trim();
+      if (name !== REQUEST_SECRETS_COOKIE) continue;
+      const rawVal = decodeURIComponent(part.slice(idx + 1).trim());
+      const decoded = Buffer.from(rawVal, 'base64url').toString('utf8');
+      const parsed = JSON.parse(decoded) as Record<string, unknown>;
+      const clean: Record<string, string> = {};
+      for (const [k, v] of Object.entries(parsed)) {
+        if (typeof v === 'string' && v.trim()) {
+          clean[k] = v.trim();
+        }
+      }
+      return clean;
+    }
+  } catch {
+    // ignore malformed cookie
+  }
+  return {};
+}
+
+export function runWithRequestSecrets(cookieHeader: string | undefined, fn: () => void): void {
+  requestSecretsStore.run(parseRequestSecretsCookie(cookieHeader), fn);
+}
+
+export function buildSecretsSetCookieHeader(isHttps: boolean): string {
+  const merged = {
+    ...(requestSecretsStore.getStore() ?? {}),
+    ...readSecretsFile(),
+  };
+  const payload = Buffer.from(JSON.stringify(merged), 'utf8').toString('base64url');
+  const attrs = [
+    `${REQUEST_SECRETS_COOKIE}=${encodeURIComponent(payload)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=2592000',
+  ];
+  if (isHttps) attrs.push('Secure');
+  return attrs.join('; ');
+}
+
 export function getProviderApiKey(slug: ProviderSlug): {
   key: string | null;
   envManaged: boolean;
@@ -242,17 +293,25 @@ export function getProviderApiKey(slug: ProviderSlug): {
       return { key: envVal, envManaged: true };
     }
   }
-  const secrets = readSecretsFile();
-  const saved = secrets[slug]?.trim();
+  const cookieSecrets = requestSecretsStore.getStore();
+  const cookieVal = cookieSecrets?.[slug]?.trim();
+  const fileSecrets = readSecretsFile();
+  const saved = fileSecrets[slug]?.trim() || cookieVal;
   return { key: saved || null, envManaged: false };
 }
 
 export function setProviderApiKey(slug: ProviderSlug, apiKey: string | null): void {
-  const secrets = readSecretsFile();
+  const secrets = {
+    ...(requestSecretsStore.getStore() ?? {}),
+    ...readSecretsFile(),
+  };
+  const reqStore = requestSecretsStore.getStore();
   if (!apiKey || !apiKey.trim()) {
     delete secrets[slug];
+    if (reqStore) delete reqStore[slug];
   } else {
     secrets[slug] = apiKey.trim();
+    if (reqStore) reqStore[slug] = apiKey.trim();
   }
   writeSecretsFile(secrets);
 }

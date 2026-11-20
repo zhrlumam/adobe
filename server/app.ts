@@ -8,12 +8,14 @@ import {
   BACKUPS_DIR,
   IS_SERVERLESS,
   addProductionLog,
+  buildSecretsSetCookieHeader,
   db,
   getRecentLogs,
   getSettings,
   getStorageBytes,
   mapAssetRow,
   resolveSafeAssetPath,
+  runWithRequestSecrets,
   saveSettings,
 } from './db.js';
 import { createLocalBackupArchive, listLocalBackups } from './backup.js';
@@ -114,6 +116,9 @@ function getSafeSvgForAsset(asset: StockAsset): string {
 export function createApp() {
   const app = express();
   app.use(express.json({ limit: '4mb' }));
+  app.use('/api', (req, _res, next) => {
+    runWithRequestSecrets(req.headers.cookie, next);
+  });
 
   app.get('/api/health', (_req: Request, res: Response) => {
     const row = db.prepare('SELECT COUNT(*) as c FROM assets').get() as { c: number };
@@ -202,6 +207,12 @@ export function createApp() {
         baseUrl: typeof baseUrl === 'string' ? baseUrl : undefined,
         selectedModel: typeof selectedModel === 'string' ? selectedModel : undefined,
       });
+
+      if (IS_SERVERLESS) {
+        const isHttps =
+          req.secure || req.headers['x-forwarded-proto'] === 'https';
+        res.setHeader('Set-Cookie', buildSecretsSetCookieHeader(isHttps));
+      }
 
       addProductionLog({
         eventType: 'provider_configured',
