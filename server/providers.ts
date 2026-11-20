@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import type {
   DesignStyle,
   ProviderCatalogEntry,
@@ -38,16 +38,16 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     defaultBaseUrl: 'https://generativelanguage.googleapis.com',
     recommendedModels: [
       {
-        id: 'gemini-4-hydrogen',
-        label: 'Gemini 4 Hydrogen (Free Tier Default)',
+        id: 'gemini-3.1-flash-lite',
+        label: 'Gemini 3.1 Flash-Lite (Free Tier Recommended)',
         tier: 'free',
-        notes: 'Recommended free-tier model for clean SVG geometry and stock metadata.',
+        notes: 'High-throughput fast free-tier model (~4s) for single vectors and batch runs.',
       },
       {
-        id: 'gemini-3.1-flash-lite',
-        label: 'Gemini 3.1 Flash-Lite',
+        id: 'gemini-4-hydrogen',
+        label: 'Gemini 4 Hydrogen (20 RPD Free Cap)',
         tier: 'free',
-        notes: 'High-throughput lightweight model for large batch runs.',
+        notes: 'High-craft SVG geometry; free tier is capped at ~20 requests/day per project.',
       },
       {
         id: 'gemini-4-neon',
@@ -306,6 +306,22 @@ export function initProvidersInDb(): void {
         JSON.stringify(entry.recommendedModels.map((m) => m.id)),
         now
       );
+    } else if (entry.slug === 'gemini') {
+      const row = db
+        .prepare('SELECT selected_model, status FROM providers WHERE slug = ?')
+        .get('gemini') as { selected_model?: string; status?: string } | undefined;
+      const syncedModels = JSON.stringify(entry.recommendedModels.map((m) => m.id));
+      if (row?.selected_model === 'gemini-4-hydrogen') {
+        db.prepare(
+          `UPDATE providers
+           SET selected_model = ?, available_models_json = ?, status = 'connected', last_error = NULL, updated_at = ?
+           WHERE slug = 'gemini'`
+        ).run('gemini-3.1-flash-lite', syncedModels, now);
+      } else {
+        db.prepare(`UPDATE providers SET available_models_json = ? WHERE slug = 'gemini'`).run(
+          syncedModels
+        );
+      }
     }
   }
 }
@@ -439,14 +455,22 @@ export async function testProviderConnection(
     }
 
     if (slug === 'gemini') {
+      const targetModel = model || 'gemini-3.1-flash-lite';
       const ai = new GoogleGenAI({
         apiKey: apiKey!,
         httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
       });
-      const response = await ai.models.generateContent({
-        model: model || 'gemini-4-hydrogen',
-        contents: 'Reply with OK',
-      });
+      const response = await withTimeout(
+        ai.models.generateContent({
+          model: targetModel,
+          contents: 'Reply with OK',
+          config: {
+            ...getGeminiThinkingConfig(targetModel),
+          },
+        }),
+        25000,
+        `Gemini connection test timed out after 25s for model "${targetModel}".`
+      );
       if (!response.text) {
         throw new Error('Empty response returned from Gemini API.');
       }
@@ -456,10 +480,10 @@ export async function testProviderConnection(
       addProductionLog({
         eventType: 'connection_test',
         providerSlug: slug,
-        model,
+        model: targetModel,
         status: 'success',
         latencyMs,
-        message: `Verified Gemini connection with ${model}`,
+        message: `Verified Gemini connection with ${targetModel}`,
       });
       return { ok: true, latencyMs, models, rateLimitInfo: null };
     }
@@ -565,7 +589,7 @@ export async function testProviderConnection(
     return { ok: true, latencyMs, models: finalModels, rateLimitInfo: rateLimits };
   } catch (err) {
     const latencyMs = Date.now() - start;
-    const message = err instanceof Error ? err.message : String(err);
+    const message = formatUpstreamError(err, slug, model);
     updateProviderRecordStatus(slug, 'error', message, null);
     addProductionLog({
       eventType: 'connection_test',
@@ -651,41 +675,66 @@ export async function generateVectorAssetWithProvider(params: {
       httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
     });
 
-    const response = await ai.models.generateContent({
-      model,
-      contents: userPrompt,
-      config: {
-        systemInstruction: VECTOR_SYSTEM_INSTRUCTION,
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            svg: {
-              type: Type.STRING,
-              description: 'Complete standalone <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">...</svg> code.',
+    try {
+      const response = await withTimeout(
+        ai.models.generateContent({
+          model,
+          contents: userPrompt,
+          config: {
+            systemInstruction: VECTOR_SYSTEM_INSTRUCTION,
+            responseMimeType: 'application/json',
+            ...getGeminiThinkingConfig(model),
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                svg: {
+                  type: Type.STRING,
+                  description:
+                    'Complete standalone <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">...</svg> code.',
+                },
+                title: { type: Type.STRING },
+                description: { type: Type.STRING },
+                keywords: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+                adobeCategory: { type: Type.STRING },
+                shutterstockCategory: { type: Type.STRING },
+              },
+              required: [
+                'svg',
+                'title',
+                'description',
+                'keywords',
+                'adobeCategory',
+                'shutterstockCategory',
+              ],
             },
-            title: { type: Type.STRING },
-            description: { type: Type.STRING },
-            keywords: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING },
-            },
-            adobeCategory: { type: Type.STRING },
-            shutterstockCategory: { type: Type.STRING },
           },
-          required: ['svg', 'title', 'description', 'keywords', 'adobeCategory', 'shutterstockCategory'],
-        },
-      },
-    });
+        }),
+        50000,
+        `Gemini generation timed out after 50s on model "${model}". Try switching to "gemini-3.1-flash-lite".`
+      );
 
-    const rawText = (response.text ?? '').trim();
-    if (!rawText) {
-      throw new Error('Gemini returned an empty response.');
+      const rawText = (response.text ?? '').trim();
+      if (!rawText) {
+        throw new Error('Gemini returned an empty response.');
+      }
+      const parsed = parseJsonPayload(rawText);
+      const latencyMs = Date.now() - start;
+      updateProviderRecordStatus(params.providerSlug, 'connected', null, null);
+      return { payload: parsed, latencyMs, modelUsed: model };
+    } catch (err) {
+      const cleanMessage = formatUpstreamError(err, params.providerSlug, model);
+      updateProviderRecordStatus(params.providerSlug, 'error', cleanMessage, null);
+      const wrapped = new Error(cleanMessage) as Error & {
+        statusCode?: number;
+        retryAfterMs?: number;
+      };
+      const status = extractHttpStatus(err);
+      if (status) wrapped.statusCode = status;
+      throw wrapped;
     }
-    const parsed = parseJsonPayload(rawText);
-    const latencyMs = Date.now() - start;
-    updateProviderRecordStatus(params.providerSlug, 'connected', null, null);
-    return { payload: parsed, latencyMs, modelUsed: model };
   }
 
   // OpenAI-compatible providers (Groq, OpenRouter, Mistral, Hugging Face, Ollama, Custom)
@@ -736,7 +785,11 @@ export async function generateVectorAssetWithProvider(params: {
   const rateLimits = extractRateLimitHeaders(resp.headers);
   if (!resp.ok) {
     const errText = await resp.text().catch(() => '');
-    const msg = `${provider.name} HTTP ${resp.status}: ${errText.slice(0, 400)}`;
+    const msg = formatUpstreamError(
+      new Error(`${provider.name} HTTP ${resp.status}: ${errText.slice(0, 600)}`),
+      params.providerSlug,
+      model
+    );
     updateProviderRecordStatus(params.providerSlug, 'error', msg, rateLimits);
     const err = new Error(msg) as Error & { statusCode?: number; retryAfterMs?: number };
     err.statusCode = resp.status;
@@ -796,32 +849,47 @@ Return JSON with: title (45-120 chars), description (80-200 chars), keywords (ar
       apiKey: apiKey!,
       httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
     });
-    const resp = await ai.models.generateContent({
-      model,
-      contents: promptText,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            title: { type: Type.STRING },
-            description: { type: Type.STRING },
-            keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
-            adobeCategory: { type: Type.STRING },
-            shutterstockCategory: { type: Type.STRING },
+    try {
+      const resp = await withTimeout(
+        ai.models.generateContent({
+          model,
+          contents: promptText,
+          config: {
+            responseMimeType: 'application/json',
+            ...getGeminiThinkingConfig(model),
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING },
+                description: { type: Type.STRING },
+                keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
+                adobeCategory: { type: Type.STRING },
+                shutterstockCategory: { type: Type.STRING },
+              },
+              required: [
+                'title',
+                'description',
+                'keywords',
+                'adobeCategory',
+                'shutterstockCategory',
+              ],
+            },
           },
-          required: ['title', 'description', 'keywords', 'adobeCategory', 'shutterstockCategory'],
-        },
-      },
-    });
-    const json = JSON.parse((resp.text ?? '{}').trim());
-    return {
-      title: String(json.title || params.prompt).slice(0, 180),
-      description: String(json.description || params.prompt).slice(0, 200),
-      keywords: Array.isArray(json.keywords) ? json.keywords.map(String) : [],
-      adobeCategory: String(json.adobeCategory || 'Graphic Resources'),
-      shutterstockCategory: String(json.shutterstockCategory || 'Vectors'),
-    };
+        }),
+        30000,
+        `Gemini metadata refresh timed out after 30s on model "${model}".`
+      );
+      const json = JSON.parse((resp.text ?? '{}').trim());
+      return {
+        title: String(json.title || params.prompt).slice(0, 180),
+        description: String(json.description || params.prompt).slice(0, 200),
+        keywords: Array.isArray(json.keywords) ? json.keywords.map(String) : [],
+        adobeCategory: String(json.adobeCategory || 'Graphic Resources'),
+        shutterstockCategory: String(json.shutterstockCategory || 'Vectors'),
+      };
+    } catch (err) {
+      throw new Error(formatUpstreamError(err, params.providerSlug, model));
+    }
   }
 
   const baseUrl = provider.baseUrl.replace(/\/+$/, '');
@@ -885,3 +953,103 @@ function parseJsonPayload(raw: string): GeneratedVectorPayload {
     shutterstockCategory: String(parsed.shutterstockCategory || 'Vectors').trim(),
   };
 }
+
+function getGeminiThinkingConfig(model: string): { thinkingConfig?: { thinkingLevel: ThinkingLevel } } {
+  if (model === 'gemini-3.1-flash-lite') {
+    return { thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } };
+  }
+  if (model.startsWith('gemini-4-') || model.startsWith('gemini-3')) {
+    return { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } };
+  }
+  return {};
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, timeoutMessage: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(timeoutMessage)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function extractHttpStatus(err: unknown): number | undefined {
+  if (err && typeof err === 'object' && 'status' in err && typeof (err as { status: unknown }).status === 'number') {
+    return (err as { status: number }).status;
+  }
+  const raw = err instanceof Error ? err.message : String(err);
+  const m = raw.match(/"code"\s*:\s*(\d{3})/) ?? raw.match(/\bHTTP\s+(\d{3})\b/);
+  return m ? Number(m[1]) : undefined;
+}
+
+function formatUpstreamError(err: unknown, providerSlug: string, model: string): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const lower = raw.toLowerCase();
+
+  let code: number | string = extractHttpStatus(err) ?? '';
+  let status = '';
+  let msg = '';
+
+  const jsonStart = raw.indexOf('{');
+  const jsonEnd = raw.lastIndexOf('}');
+  if (jsonStart >= 0 && jsonEnd > jsonStart) {
+    const jsonSlice = raw.slice(jsonStart, jsonEnd + 1);
+    try {
+      const parsed = JSON.parse(jsonSlice) as {
+        error?: { code?: number; message?: string; status?: string };
+        message?: string;
+      };
+      if (parsed?.error) {
+        code = parsed.error.code ?? code;
+        status = parsed.error.status ?? '';
+        msg = parsed.error.message ?? '';
+      } else if (parsed?.message) {
+        msg = parsed.message;
+      }
+    } catch {
+      const codeMatch = jsonSlice.match(/"code"\s*:\s*(\d+)/);
+      const statusMatch = jsonSlice.match(/"status"\s*:\s*"([^"]+)"/);
+      const msgMatch = jsonSlice.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      if (codeMatch) code = Number(codeMatch[1]);
+      if (statusMatch) status = statusMatch[1];
+      if (msgMatch) msg = msgMatch[1].replace(/\\n/g, ' ');
+    }
+  }
+
+  if (Number(code) === 429 || lower.includes('resource_exhausted') || lower.includes('quota')) {
+    if (providerSlug === 'gemini') {
+      if (model === 'gemini-4-neon' && (lower.includes('limit: 0') || lower.includes('freetier') || lower.includes('free_tier'))) {
+        return `Gemini 429 RESOURCE_EXHAUSTED: "${model}" has 0 free-tier quota and requires a paid billing-enabled API key. Switch to "gemini-3.1-flash-lite" or configure Groq / OpenRouter in AI Providers.`;
+      }
+      const limitMatch = raw.match(/limit:\s*(\d+)/i);
+      const retryMatch = raw.match(/retry in ([0-9hms.]+)/i);
+      const limitHint = limitMatch ? ` (${limitMatch[1]} requests/day limit)` : '';
+      const cleanRetry = retryMatch ? retryMatch[1].replace(/\.\d+s$/i, 's') : '';
+      const retryHint = cleanRetry ? ` Retry resets in ~${cleanRetry}.` : '';
+      return `Gemini 429 RESOURCE_EXHAUSTED: Free-tier quota reached for "${model}"${limitHint}.${retryHint} Switch model to "gemini-3.1-flash-lite" or activate Groq / OpenRouter in AI Providers.`;
+    }
+    return `${providerSlug} 429 Rate Limit Exceeded for "${model}". Wait briefly, lower batch concurrency, or switch AI provider.`;
+  }
+
+  if (Number(code) === 503 || lower.includes('unavailable') || lower.includes('high demand')) {
+    return `${providerSlug} 503 Unavailable: "${model}" is experiencing high upstream demand. Switch to "gemini-3.1-flash-lite" or another provider.`;
+  }
+
+  if (Number(code) === 401 || Number(code) === 403 || lower.includes('api_key_invalid') || lower.includes('invalid api key')) {
+    return `${providerSlug} Authentication Error (${code || 401}): API key is invalid or lacks permission. Verify your key in AI Providers.`;
+  }
+
+  if (msg) {
+    const firstLine = msg.split('\n')[0].trim();
+    return `${providerSlug}${code ? ` ${code}` : ''}${status ? ` ${status}` : ''}: ${firstLine}`;
+  }
+
+  return raw.length > 350 ? `${raw.slice(0, 350)}...` : raw;
+}
+
+

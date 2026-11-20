@@ -27,11 +27,13 @@ import type {
 interface BatchViewProps {
   onNotify: (msg: string) => void;
   onInspectAssetId: (assetId: string) => void;
+  onGoToProviders: () => void;
 }
 
 export const BatchView: React.FC<BatchViewProps> = ({
   onNotify,
   onInspectAssetId,
+  onGoToProviders,
 }) => {
   const [batches, setBatches] = useState<BatchJob[]>([]);
   const [selectedBatch, setSelectedBatch] = useState<BatchJob | null>(null);
@@ -47,6 +49,7 @@ export const BatchView: React.FC<BatchViewProps> = ({
   const [providerSlug, setProviderSlug] = useState<ProviderSlug>('gemini');
   const [model, setModel] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
   const [exportingZip, setExportingZip] = useState(false);
 
   const loadBatches = async () => {
@@ -106,10 +109,11 @@ export const BatchView: React.FC<BatchViewProps> = ({
   const handleStartBatch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (basePrompt.trim().length < 3) {
-      onNotify('Enter a base prompt for the batch.');
+      setFormError('Enter a base prompt for the batch (at least 3 characters).');
       return;
     }
     setSubmitting(true);
+    setFormError(null);
     try {
       const { batch } = await api.createBatch({
         name: name.trim() || `${category} Batch (${requestedCount})`,
@@ -127,7 +131,9 @@ export const BatchView: React.FC<BatchViewProps> = ({
       onNotify(`Started batch ${batch.id} (${requestedCount} items)`);
       setName('');
     } catch (err) {
-      onNotify(err instanceof Error ? err.message : 'Failed to start batch');
+      const msg = err instanceof Error ? err.message : 'Failed to start batch';
+      setFormError(msg);
+      onNotify(msg);
     } finally {
       setSubmitting(false);
     }
@@ -349,6 +355,19 @@ export const BatchView: React.FC<BatchViewProps> = ({
               </div>
             </div>
 
+            {formError && (
+              <div className="p-2.5 rounded-md bg-red-50 border border-red-200 text-xs text-red-800 space-y-1.5">
+                <div className="break-words">{formError}</div>
+                <button
+                  type="button"
+                  onClick={onGoToProviders}
+                  className="text-[11px] font-medium underline cursor-pointer"
+                >
+                  Open AI Providers →
+                </button>
+              </div>
+            )}
+
             <button
               type="submit"
               disabled={submitting}
@@ -497,7 +516,7 @@ export const BatchView: React.FC<BatchViewProps> = ({
                         <span className="text-slate-800 truncate">{item.variationPrompt}</span>
                       </div>
                       {item.errorMessage && (
-                        <div className="text-[11px] text-red-600 font-mono mt-0.5 truncate">
+                        <div className="text-[11px] text-red-600 font-mono mt-0.5 break-words">
                           {item.errorMessage}
                         </div>
                       )}

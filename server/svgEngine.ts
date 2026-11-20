@@ -149,12 +149,12 @@ function checkBasicXmlWellFormed(xml: string): boolean {
     .replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '');
 
   const stack: string[] = [];
-  const tagRegex = /<\/?([a-zA-Z_][\w:.-]*)(?:\s+(?:[^"'<>]|"[^"]*"|'[^']*')*)?\s*(\/?)>/g;
+  const tagRegex = /<\/?([a-zA-Z_][\w:.-]*)(?:\s+(?:[^"'<>]|"[^"]*"|'[^']*')*)?\s*\/?>/g;
   let match: RegExpExecArray | null;
   while ((match = tagRegex.exec(cleaned)) !== null) {
     const full = match[0];
     const tagName = match[1].toLowerCase();
-    const selfClosing = match[2] === '/';
+    const selfClosing = full.endsWith('/>');
     if (full.startsWith('</')) {
       const top = stack.pop();
       if (top !== tagName) return false;
@@ -162,7 +162,14 @@ function checkBasicXmlWellFormed(xml: string): boolean {
       stack.push(tagName);
     }
   }
-  return stack.length === 0;
+  if (stack.length !== 0) return false;
+
+  try {
+    new Resvg(xml);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function renderSvgToPngBuffer(svg: string, size = 4000): Promise<Buffer> {

@@ -304,7 +304,7 @@ export function createApp() {
       }
 
       if (generatedAssets.length === 0) {
-        return res.status(502).json({
+        return res.status(422).json({
           error: errors[0] || 'AI generation failed.',
           errors,
         });
@@ -497,7 +497,7 @@ export function createApp() {
       >;
       res.json({ asset: mapAssetRow(updatedRow, true) });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(422).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
@@ -846,6 +846,18 @@ export function createApp() {
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename="${clean}"`);
     res.sendFile(target);
+  });
+
+  app.use('/api', (_req: Request, res: Response) => {
+    res.status(404).json({ error: 'API endpoint not found' });
+  });
+
+  app.use((err: unknown, req: Request, res: Response, next: express.NextFunction) => {
+    if (req.path.startsWith('/api')) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return res.status(500).json({ error: msg });
+    }
+    return next(err);
   });
 
   return app;

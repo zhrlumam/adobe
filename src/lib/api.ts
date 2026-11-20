@@ -59,9 +59,11 @@ async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
       data = JSON.parse(text) as Record<string, unknown>;
     } catch {
       if (!res.ok) {
-        throw new Error(`Request failed (${res.status})`);
+        throw new Error(
+          `Request failed (HTTP ${res.status}${res.status === 504 ? ' Gateway Timeout — upstream AI model took too long; try gemini-3.1-flash-lite or Groq' : ''})`
+        );
       }
-      throw new Error(`Unexpected non-JSON response from ${url}`);
+      throw new Error(`Unexpected non-JSON response from ${url} (HTTP ${res.status})`);
     }
   }
   if (!res.ok) {

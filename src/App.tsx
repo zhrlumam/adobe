@@ -250,6 +250,7 @@ export default function App() {
             <BatchView
               onNotify={notify}
               onInspectAssetId={(id) => void handleInspectAssetId(id)}
+              onGoToProviders={() => setActiveTab('providers')}
             />
           )}
           {activeTab === 'library' && (

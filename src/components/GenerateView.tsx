@@ -85,24 +85,43 @@ export const GenerateView: React.FC<GenerateViewProps> = ({
     setGenerating(true);
     setError(null);
 
+    const collected: StockAsset[] = [];
+    const failures: string[] = [];
+
     try {
-      const data = await api.generateAssets({
-        prompt: prompt.trim(),
-        category,
-        style,
-        quantity,
-        targetPlatform,
-        providerSlug,
-        model,
-      });
-      setResults(data.assets);
-      if (data.errors.length > 0) {
-        setError(`Partial warnings: ${data.errors.join(' | ')}`);
+      for (let i = 0; i < quantity; i++) {
+        try {
+          const variationTag =
+            quantity > 1 ? `${prompt.trim()} (Distinct variation ${i + 1} of ${quantity})` : prompt.trim();
+          const data = await api.generateAssets({
+            prompt: variationTag,
+            category,
+            style,
+            quantity: 1,
+            targetPlatform,
+            providerSlug,
+            model,
+          });
+          if (Array.isArray(data.assets) && data.assets.length > 0) {
+            collected.push(...data.assets);
+            setResults([...collected]);
+          }
+          if (Array.isArray(data.errors) && data.errors.length > 0) {
+            failures.push(...data.errors);
+          }
+        } catch (err) {
+          failures.push(err instanceof Error ? err.message : 'Generation failed');
+        }
       }
-      onNotify(`Generated ${data.assets.length} validated SVG vector asset(s)`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Generation failed';
-      setError(msg);
+
+      if (collected.length === 0) {
+        setError(failures[0] || 'AI generation failed.');
+      } else {
+        if (failures.length > 0) {
+          setError(`Generated ${collected.length}/${quantity}. Warnings: ${failures[0]}`);
+        }
+        onNotify(`Generated ${collected.length} validated SVG vector asset(s)`);
+      }
     } finally {
       setGenerating(false);
     }
@@ -280,9 +299,40 @@ export const GenerateView: React.FC<GenerateViewProps> = ({
           </div>
 
           {error && (
-            <div className="p-3 rounded-md bg-red-50 border border-red-200 text-xs text-red-800 flex items-start gap-2">
-              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span className="break-words">{error}</span>
+            <div className="p-3 rounded-md bg-red-50 border border-red-200 text-xs text-red-800 space-y-2">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span className="break-words leading-relaxed">{error}</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 pl-6">
+                {providerSlug === 'gemini' && model !== 'gemini-3.1-flash-lite' && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setModel('gemini-3.1-flash-lite');
+                      setError(null);
+                      try {
+                        await api.saveProviderConfig('gemini', {
+                          selectedModel: 'gemini-3.1-flash-lite',
+                        });
+                        onNotify('Switched Gemini model to gemini-3.1-flash-lite (Free Tier)');
+                      } catch {
+                        onNotify('Selected gemini-3.1-flash-lite for next generation');
+                      }
+                    }}
+                    className="px-2.5 py-1 text-[11px] font-medium bg-slate-900 hover:bg-[#2563EB] text-white rounded cursor-pointer"
+                  >
+                    Switch to gemini-3.1-flash-lite
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={onGoToProviders}
+                  className="px-2.5 py-1 text-[11px] font-medium bg-white border border-red-200 text-red-800 hover:bg-red-100/60 rounded cursor-pointer"
+                >
+                  Open AI Providers →
+                </button>
+              </div>
             </div>
           )}
 
