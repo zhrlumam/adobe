@@ -107,10 +107,102 @@ function sanitizeDownloadName(raw: string): string {
 
 function getSafeSvgForAsset(asset: StockAsset): string {
   const filePath = resolveSafeAssetPath(asset.svgFilename);
-  if (!filePath || !fs.existsSync(filePath)) {
-    throw new Error(`SVG file missing from local storage: ${asset.svgFilename}`);
+  if (filePath && fs.existsSync(filePath)) {
+    return fs.readFileSync(filePath, 'utf8');
   }
-  return fs.readFileSync(filePath, 'utf8');
+  if (typeof asset.svgContent === 'string' && asset.svgContent.trim()) {
+    return asset.svgContent;
+  }
+  throw new Error(`SVG file missing from local storage: ${asset.svgFilename}`);
+}
+
+function rehydrateAssetIfNeeded(rawAsset: unknown): Record<string, unknown> | undefined {
+  if (!IS_SERVERLESS || !rawAsset || typeof rawAsset !== 'object') return undefined;
+  const candidate = rawAsset as Partial<StockAsset>;
+  if (typeof candidate.id !== 'string' || typeof candidate.svgContent !== 'string') {
+    return undefined;
+  }
+  const cleanId = sanitizeDownloadName(candidate.id);
+  const svgFilename = `${cleanId}.svg`;
+  const settings = getSettings();
+  const sanitized = sanitizeAndValidateSvg(candidate.svgContent, settings.strictSanitizer);
+  if (!sanitized.validation.hasSvgRoot || !sanitized.validation.validXml) {
+    return undefined;
+  }
+  const targetPath = resolveSafeAssetPath(svgFilename);
+  if (targetPath) {
+    fs.writeFileSync(targetPath, sanitized.sanitizedSvg, 'utf8');
+  }
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT OR IGNORE INTO assets (
+      id, batch_id, prompt, category, style, target_platform,
+      provider_slug, model, title, description, keywords_json,
+      adobe_category, shutterstock_category, svg_filename, svg_hash,
+      validation_json, width, height, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    cleanId,
+    candidate.batchId ?? null,
+    String(candidate.prompt || candidate.title || 'Vector Illustration'),
+    String(candidate.category || 'Abstract'),
+    String(candidate.style || 'Flat Geometric'),
+    String(candidate.targetPlatform || 'both'),
+    String(candidate.providerSlug || 'gemini'),
+    String(candidate.model || 'gemini-3.1-flash-lite'),
+    String(candidate.title || 'Vector Illustration').slice(0, 200),
+    String(candidate.description || '').slice(0, 200),
+    JSON.stringify(Array.isArray(candidate.keywords) ? candidate.keywords : []),
+    String(candidate.adobeCategory || 'Graphic Resources'),
+    String(candidate.shutterstockCategory || 'Vectors'),
+    svgFilename,
+    sanitized.geometryHash,
+    JSON.stringify(sanitized.validation),
+    1000,
+    1000,
+    String(candidate.createdAt || now),
+    String(candidate.updatedAt || now)
+  );
+  return db.prepare('SELECT * FROM assets WHERE id = ?').get(cleanId) as
+    | Record<string, unknown>
+    | undefined;
+}
+
+function sanitizeClientAssetsForExport(rawAssets: unknown): StockAsset[] {
+  if (!Array.isArray(rawAssets)) return [];
+  const settings = getSettings();
+  const valid: StockAsset[] = [];
+  for (const item of rawAssets.slice(0, 100)) {
+    if (!item || typeof item !== 'object') continue;
+    const a = item as Partial<StockAsset>;
+    if (typeof a.id !== 'string' || typeof a.svgContent !== 'string') continue;
+    const res = sanitizeAndValidateSvg(a.svgContent, settings.strictSanitizer);
+    if (!res.validation.hasSvgRoot || !res.validation.validXml) continue;
+    valid.push({
+      id: sanitizeDownloadName(a.id),
+      batchId: a.batchId ?? null,
+      prompt: String(a.prompt || ''),
+      category: (a.category || 'Abstract') as StockCategory,
+      style: (a.style || 'Flat Geometric') as DesignStyle,
+      targetPlatform: (a.targetPlatform || 'both') as TargetPlatform,
+      providerSlug: (a.providerSlug || 'gemini') as ProviderSlug,
+      model: String(a.model || ''),
+      title: String(a.title || a.id).slice(0, 200),
+      description: String(a.description || a.title || a.id).slice(0, 200),
+      keywords: Array.isArray(a.keywords) ? a.keywords.map(String) : [],
+      adobeCategory: String(a.adobeCategory || 'Graphic Resources'),
+      shutterstockCategory: String(a.shutterstockCategory || 'Vectors'),
+      svgFilename: `${sanitizeDownloadName(a.id)}.svg`,
+      svgHash: res.geometryHash,
+      svgContent: res.sanitizedSvg,
+      validation: res.validation,
+      width: 1000,
+      height: 1000,
+      createdAt: String(a.createdAt || new Date().toISOString()),
+      updatedAt: String(a.updatedAt || new Date().toISOString()),
+    });
+  }
+  return valid;
 }
 
 export function createApp() {
@@ -393,9 +485,12 @@ export function createApp() {
   });
 
   app.patch('/api/assets/:id', (req: Request, res: Response) => {
-    const row = db.prepare('SELECT * FROM assets WHERE id = ?').get(req.params.id) as
+    let row = db.prepare('SELECT * FROM assets WHERE id = ?').get(req.params.id) as
       | Record<string, unknown>
       | undefined;
+    if (!row && req.body?.fallbackAsset) {
+      row = rehydrateAssetIfNeeded(req.body.fallbackAsset);
+    }
     if (!row) return res.status(404).json({ error: 'Asset not found' });
 
     const existing = mapAssetRow(row, true);
@@ -470,9 +565,12 @@ export function createApp() {
 
   app.post('/api/assets/:id/regenerate-metadata', async (req: Request, res: Response) => {
     try {
-      const row = db.prepare('SELECT * FROM assets WHERE id = ?').get(req.params.id) as
+      let row = db.prepare('SELECT * FROM assets WHERE id = ?').get(req.params.id) as
         | Record<string, unknown>
         | undefined;
+      if (!row && req.body?.fallbackAsset) {
+        row = rehydrateAssetIfNeeded(req.body.fallbackAsset);
+      }
       if (!row) return res.status(404).json({ error: 'Asset not found' });
 
       const asset = mapAssetRow(row, true);
@@ -524,7 +622,10 @@ export function createApp() {
     const row = db.prepare('SELECT * FROM assets WHERE id = ?').get(req.params.id) as
       | Record<string, unknown>
       | undefined;
-    if (!row) return res.status(404).json({ error: 'Asset not found' });
+    if (!row) {
+      if (IS_SERVERLESS) return res.json({ ok: true });
+      return res.status(404).json({ error: 'Asset not found' });
+    }
 
     const asset = mapAssetRow(row, false);
     const filePath = resolveSafeAssetPath(asset.svgFilename);
@@ -596,9 +697,63 @@ export function createApp() {
     }
   });
 
+  // --- Stateless Single Asset Export (Serverless cold-start resilient) ---
+  app.post('/api/export/single', async (req: Request, res: Response) => {
+    try {
+      const { id = 'stockforge-asset', title = 'StockForge Vector', svgContent, format = 'svg', size, quality } =
+        req.body ?? {};
+      const fmt = String(format).toLowerCase();
+      if (!['svg', 'eps', 'png', 'jpg'].includes(fmt)) {
+        return res.status(400).json({ error: 'Unsupported export format. Use svg, eps, png, or jpg.' });
+      }
+      if (typeof svgContent !== 'string' || !svgContent.trim()) {
+        return res.status(400).json({ error: 'svgContent is required for stateless export.' });
+      }
+      const settings = getSettings();
+      const validated = sanitizeAndValidateSvg(svgContent, settings.strictSanitizer);
+      if (!validated.validation.hasSvgRoot || !validated.validation.validXml) {
+        return res.status(400).json({ error: 'SVG failed XML validation.' });
+      }
+      const svg = validated.sanitizedSvg;
+      const safeFilename = sanitizeDownloadName(String(id));
+      const exportSize = Math.min(8000, Math.max(512, Number(size) || settings.exportRasterSize));
+      const exportQuality = Math.min(100, Math.max(60, Number(quality) || settings.exportJpgQuality));
+
+      if (fmt === 'svg') {
+        res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}.svg"`);
+        return res.send(svg);
+      }
+      if (fmt === 'eps') {
+        const eps = convertSvgToVectorEps(svg, settings.epsArtboardSize, String(title));
+        res.setHeader('Content-Type', 'application/postscript');
+        res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}.eps"`);
+        return res.send(eps);
+      }
+      if (fmt === 'png') {
+        const pngBuffer = await renderSvgToPngBuffer(svg, exportSize);
+        res.setHeader('Content-Type', 'image/png');
+        res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}.png"`);
+        return res.send(pngBuffer);
+      }
+      const jpgBuffer = await renderSvgToJpgBuffer(svg, exportSize, exportQuality);
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}.jpg"`);
+      return res.send(jpgBuffer);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // --- Multi-Asset Bundle ZIP & CSV Export ---
   app.post('/api/export/csv', (req: Request, res: Response) => {
-    const { assetIds, batchId, platform = 'adobe_stock', fileExtension = 'eps' } = req.body ?? {};
+    const {
+      assetIds,
+      batchId,
+      platform = 'adobe_stock',
+      fileExtension = 'eps',
+      assets: fallbackAssets,
+    } = req.body ?? {};
     let rows: Record<string, unknown>[] = [];
     if (Array.isArray(assetIds) && assetIds.length > 0) {
       const placeholders = assetIds.map(() => '?').join(',');
@@ -615,7 +770,12 @@ export function createApp() {
         .all() as Record<string, unknown>[];
     }
 
-    const assets = rows.map((r) => mapAssetRow(r, false));
+    const dbAssets = rows.map((r) => mapAssetRow(r, false));
+    const clientAssets = sanitizeClientAssetsForExport(fallbackAssets);
+    const byId = new Map<string, StockAsset>();
+    for (const a of clientAssets) byId.set(a.id, a);
+    for (const a of dbAssets) byId.set(a.id, a);
+    const assets = Array.from(byId.values());
     const ext = ['svg', 'eps', 'png', 'jpg'].includes(String(fileExtension))
       ? String(fileExtension)
       : 'eps';
@@ -643,6 +803,7 @@ export function createApp() {
         includeShutterstockCsv = true,
         rasterSize,
         jpgQuality,
+        assets: fallbackAssets,
       } = req.body ?? {};
 
       let rows: Record<string, unknown>[] = [];
@@ -661,7 +822,12 @@ export function createApp() {
           .all() as Record<string, unknown>[];
       }
 
-      const assets = rows.map((r) => mapAssetRow(r, false));
+      const dbAssets = rows.map((r) => mapAssetRow(r, true));
+      const clientAssets = sanitizeClientAssetsForExport(fallbackAssets);
+      const byId = new Map<string, StockAsset>();
+      for (const a of clientAssets) byId.set(a.id, a);
+      for (const a of dbAssets) byId.set(a.id, a);
+      const assets = Array.from(byId.values());
       if (assets.length === 0) {
         return res.status(400).json({ error: 'No matching assets found to export.' });
       }

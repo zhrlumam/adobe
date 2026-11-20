@@ -106,14 +106,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </div>
 
-      {/* Serverless runtime notice (only shown on Vercel / Lambda ephemeral storage) */}
-      {summary.isServerless && (
-        <div className="p-3.5 rounded-lg border border-amber-200 bg-amber-50 text-xs text-amber-900 leading-relaxed">
-          <span className="font-semibold">Serverless Runtime (/tmp):</span> Temporary storage resets between cold starts. Set{' '}
-          <code className="font-mono bg-amber-100 px-1 rounded">GEMINI_API_KEY</code> (or Groq/OpenRouter keys) in Vercel Environment Variables and export generated ZIP/EPS/SVG bundles locally.
-        </div>
-      )}
-
       {/* KPI Strip */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="p-5 bg-white border border-slate-200 rounded-lg">

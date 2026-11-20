@@ -10,6 +10,19 @@ import type {
   SystemSettings,
   TargetPlatform,
 } from '../types/stockforge';
+import {
+  deleteServerlessAsset,
+  getServerlessAsset,
+  getServerlessAssets,
+  getServerlessBatch,
+  getServerlessBatches,
+  getServerlessRuntimeFlag,
+  mergeAssets,
+  mergeBatches,
+  saveServerlessAssets,
+  saveServerlessBatches,
+  setServerlessRuntimeFlag,
+} from './serverlessStore';
 
 export const STOCK_CATEGORIES: StockCategory[] = [
   'Abstract',
@@ -76,10 +89,113 @@ async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
-export const api = {
-  getDashboard: () => apiJson<DashboardSummary>('/api/dashboard'),
+function filterAssetsByParams(assets: StockAsset[], params?: Record<string, string>): StockAsset[] {
+  if (!params) return assets;
+  const q = String(params.q ?? '').trim().toLowerCase();
+  const category = String(params.category ?? 'all');
+  const style = String(params.style ?? 'all');
+  const platform = String(params.platform ?? 'all');
+  const batchId = String(params.batchId ?? '');
+  const status = String(params.status ?? 'all');
 
-  getProviders: () => apiJson<{ providers: ProviderState[] }>('/api/providers'),
+  return assets.filter((a) => {
+    if (category !== 'all' && a.category !== category) return false;
+    if (style !== 'all' && a.style !== style) return false;
+    if (platform !== 'all' && a.targetPlatform !== platform && a.targetPlatform !== 'both') {
+      return false;
+    }
+    if (batchId && a.batchId !== batchId) return false;
+    if (status === 'ready' && !a.validation.commercialReady) return false;
+    if (status === 'issues' && a.validation.commercialReady) return false;
+    if (q) {
+      const hit =
+        a.id.toLowerCase().includes(q) ||
+        a.title.toLowerCase().includes(q) ||
+        a.prompt.toLowerCase().includes(q) ||
+        a.keywords.some((k) => k.toLowerCase().includes(q));
+      if (!hit) return false;
+    }
+    return true;
+  });
+}
+
+async function syncCompletedBatchAssets(batch: BatchJob): Promise<void> {
+  if (!getServerlessRuntimeFlag() || !batch.items || batch.items.length === 0) return;
+  const completedIds = batch.items
+    .filter((i) => i.status === 'completed' && typeof i.assetId === 'string' && i.assetId)
+    .map((i) => i.assetId as string);
+  if (completedIds.length === 0) return;
+
+  for (const assetId of completedIds) {
+    const cached = await getServerlessAsset(assetId);
+    if (!cached) {
+      try {
+        const res = await apiJson<{ asset: StockAsset }>(
+          `/api/assets/${encodeURIComponent(assetId)}`
+        );
+        if (res?.asset) {
+          await saveServerlessAssets([res.asset]);
+        }
+      } catch {
+        // ignore if asset already evicted from warm Lambda
+      }
+    }
+  }
+}
+
+export const api = {
+  getDashboard: async (): Promise<DashboardSummary> => {
+    const data = await apiJson<DashboardSummary>('/api/dashboard');
+    if (typeof data.isServerless === 'boolean') {
+      setServerlessRuntimeFlag(data.isServerless);
+    }
+    if (!data.isServerless) {
+      return data;
+    }
+
+    await saveServerlessAssets(data.recentAssets ?? []);
+    const [localAssets, localBatches] = await Promise.all([
+      getServerlessAssets(),
+      getServerlessBatches(),
+    ]);
+    const mergedAssets = mergeAssets(data.recentAssets ?? [], localAssets);
+
+    const categoryMap = new Map<string, number>();
+    let cachedSvgBytes = 0;
+    for (const a of mergedAssets) {
+      categoryMap.set(a.category, (categoryMap.get(a.category) ?? 0) + 1);
+      if (a.svgContent) cachedSvgBytes += a.svgContent.length;
+    }
+    const categoryBreakdown =
+      mergedAssets.length >= data.totalAssets
+        ? Array.from(categoryMap.entries())
+            .map(([category, count]) => ({ category, count }))
+            .sort((a, b) => b.count - a.count)
+        : data.categoryBreakdown;
+
+    return {
+      ...data,
+      totalAssets: Math.max(data.totalAssets, mergedAssets.length),
+      commercialReadyAssets: Math.max(
+        data.commercialReadyAssets,
+        mergedAssets.filter((a) => a.validation.commercialReady).length
+      ),
+      totalBatches: Math.max(data.totalBatches, localBatches.length),
+      storageBytes: Math.max(data.storageBytes, cachedSvgBytes),
+      recentAssets: mergedAssets.slice(0, 6),
+      categoryBreakdown,
+    };
+  },
+
+  getProviders: async () => {
+    const data = await apiJson<{ providers: ProviderState[]; isServerless?: boolean }>(
+      '/api/providers'
+    );
+    if (typeof data.isServerless === 'boolean') {
+      setServerlessRuntimeFlag(data.isServerless);
+    }
+    return data;
+  },
 
   saveProviderConfig: (
     slug: ProviderSlug,
@@ -118,7 +234,7 @@ export const api = {
       { method: 'POST' }
     ),
 
-  generateAssets: (payload: {
+  generateAssets: async (payload: {
     prompt: string;
     category: StockCategory;
     style: DesignStyle;
@@ -126,24 +242,57 @@ export const api = {
     targetPlatform: TargetPlatform;
     providerSlug?: ProviderSlug;
     model?: string;
-  }) =>
-    apiJson<{ assets: StockAsset[]; errors: string[] }>('/api/generate', {
+  }) => {
+    const res = await apiJson<{ assets: StockAsset[]; errors: string[] }>('/api/generate', {
       method: 'POST',
       body: JSON.stringify(payload),
-    }),
+    });
+    if (getServerlessRuntimeFlag() && Array.isArray(res.assets) && res.assets.length > 0) {
+      await saveServerlessAssets(res.assets);
+    }
+    return res;
+  },
 
-  getAssets: (params?: Record<string, string>) => {
+  getAssets: async (params?: Record<string, string>) => {
     const qs = params ? '?' + new URLSearchParams(params).toString() : '';
-    return apiJson<{
+    const data = await apiJson<{
       assets: StockAsset[];
       adobeCategories: string[];
       shutterstockCategories: string[];
     }>(`/api/assets${qs}`);
+
+    if (!getServerlessRuntimeFlag()) {
+      return data;
+    }
+
+    await saveServerlessAssets(data.assets ?? []);
+    const localAssets = await getServerlessAssets();
+    const merged = mergeAssets(data.assets ?? [], localAssets);
+    return {
+      ...data,
+      assets: filterAssetsByParams(merged, params),
+    };
   },
 
-  getAsset: (id: string) => apiJson<{ asset: StockAsset }>(`/api/assets/${id}`),
+  getAsset: async (id: string) => {
+    try {
+      const res = await apiJson<{ asset: StockAsset }>(`/api/assets/${encodeURIComponent(id)}`);
+      if (getServerlessRuntimeFlag() && res.asset) {
+        await saveServerlessAssets([res.asset]);
+      }
+      return res;
+    } catch (err) {
+      if (getServerlessRuntimeFlag()) {
+        const cached = await getServerlessAsset(id);
+        if (cached) {
+          return { asset: cached };
+        }
+      }
+      throw err;
+    }
+  },
 
-  updateAsset: (
+  updateAsset: async (
     id: string,
     payload: Partial<{
       title: string;
@@ -154,23 +303,60 @@ export const api = {
       targetPlatform: TargetPlatform;
       svgContent: string;
     }>
-  ) =>
-    apiJson<{ asset: StockAsset }>(`/api/assets/${id}`, {
+  ) => {
+    const fallbackAsset = getServerlessRuntimeFlag() ? await getServerlessAsset(id) : null;
+    const res = await apiJson<{ asset: StockAsset }>(`/api/assets/${encodeURIComponent(id)}`, {
       method: 'PATCH',
-      body: JSON.stringify(payload),
-    }),
+      body: JSON.stringify(fallbackAsset ? { ...payload, fallbackAsset } : payload),
+    });
+    if (getServerlessRuntimeFlag() && res.asset) {
+      await saveServerlessAssets([res.asset]);
+    }
+    return res;
+  },
 
-  regenerateAssetMetadata: (id: string) =>
-    apiJson<{ asset: StockAsset }>(`/api/assets/${id}/regenerate-metadata`, {
-      method: 'POST',
-    }),
+  regenerateAssetMetadata: async (id: string) => {
+    const fallbackAsset = getServerlessRuntimeFlag() ? await getServerlessAsset(id) : null;
+    const res = await apiJson<{ asset: StockAsset }>(
+      `/api/assets/${encodeURIComponent(id)}/regenerate-metadata`,
+      {
+        method: 'POST',
+        body: JSON.stringify(fallbackAsset ? { fallbackAsset } : {}),
+      }
+    );
+    if (getServerlessRuntimeFlag() && res.asset) {
+      await saveServerlessAssets([res.asset]);
+    }
+    return res;
+  },
 
-  deleteAsset: (id: string) =>
-    apiJson<{ ok: boolean }>(`/api/assets/${id}`, { method: 'DELETE' }),
+  deleteAsset: async (id: string) => {
+    const res = await apiJson<{ ok: boolean }>(`/api/assets/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+    if (getServerlessRuntimeFlag()) {
+      await deleteServerlessAsset(id);
+    }
+    return res;
+  },
 
-  getBatches: () => apiJson<{ batches: BatchJob[]; isServerless?: boolean }>('/api/batches'),
+  getBatches: async () => {
+    const data = await apiJson<{ batches: BatchJob[]; isServerless?: boolean }>('/api/batches');
+    if (typeof data.isServerless === 'boolean') {
+      setServerlessRuntimeFlag(data.isServerless);
+    }
+    if (!getServerlessRuntimeFlag()) {
+      return data;
+    }
+    await saveServerlessBatches(data.batches ?? []);
+    const localBatches = await getServerlessBatches();
+    return {
+      ...data,
+      batches: mergeBatches(data.batches ?? [], localBatches),
+    };
+  },
 
-  createBatch: (payload: {
+  createBatch: async (payload: {
     name: string;
     basePrompt: string;
     category: StockCategory;
@@ -180,38 +366,109 @@ export const api = {
     concurrency: number;
     providerSlug?: ProviderSlug;
     model?: string;
-  }) =>
-    apiJson<{ batch: BatchJob; isServerless?: boolean }>('/api/batches', {
+  }) => {
+    const res = await apiJson<{ batch: BatchJob; isServerless?: boolean }>('/api/batches', {
       method: 'POST',
       body: JSON.stringify(payload),
-    }),
+    });
+    if (typeof res.isServerless === 'boolean') {
+      setServerlessRuntimeFlag(res.isServerless);
+    }
+    if (getServerlessRuntimeFlag() && res.batch) {
+      await saveServerlessBatches([res.batch]);
+    }
+    return res;
+  },
 
-  getBatch: (id: string) =>
-    apiJson<{ batch: BatchJob; isServerless?: boolean }>(`/api/batches/${id}`),
+  getBatch: async (id: string) => {
+    try {
+      const res = await apiJson<{ batch: BatchJob; isServerless?: boolean }>(
+        `/api/batches/${encodeURIComponent(id)}`
+      );
+      if (typeof res.isServerless === 'boolean') {
+        setServerlessRuntimeFlag(res.isServerless);
+      }
+      if (getServerlessRuntimeFlag() && res.batch) {
+        await saveServerlessBatches([res.batch]);
+        await syncCompletedBatchAssets(res.batch);
+      }
+      return res;
+    } catch (err) {
+      if (getServerlessRuntimeFlag()) {
+        const cached = await getServerlessBatch(id);
+        if (cached) {
+          return { batch: cached, isServerless: true };
+        }
+      }
+      throw err;
+    }
+  },
 
-  stepBatch: (id: string) =>
-    apiJson<{ batch: BatchJob; isServerless?: boolean }>(`/api/batches/${id}/step`, {
-      method: 'POST',
-    }),
+  stepBatch: async (id: string) => {
+    const res = await apiJson<{ batch: BatchJob; isServerless?: boolean }>(
+      `/api/batches/${encodeURIComponent(id)}/step`,
+      { method: 'POST' }
+    );
+    if (typeof res.isServerless === 'boolean') {
+      setServerlessRuntimeFlag(res.isServerless);
+    }
+    if (getServerlessRuntimeFlag() && res.batch) {
+      await saveServerlessBatches([res.batch]);
+      await syncCompletedBatchAssets(res.batch);
+    }
+    return res;
+  },
 
-  pauseBatch: (id: string) =>
-    apiJson<{ batch: BatchJob }>(`/api/batches/${id}/pause`, { method: 'POST' }),
+  pauseBatch: async (id: string) => {
+    const res = await apiJson<{ batch: BatchJob }>(
+      `/api/batches/${encodeURIComponent(id)}/pause`,
+      { method: 'POST' }
+    );
+    if (getServerlessRuntimeFlag() && res.batch) {
+      await saveServerlessBatches([res.batch]);
+    }
+    return res;
+  },
 
-  resumeBatch: (id: string, retryFailed = false) =>
-    apiJson<{ batch: BatchJob }>(`/api/batches/${id}/resume`, {
-      method: 'POST',
-      body: JSON.stringify({ retryFailed }),
-    }),
+  resumeBatch: async (id: string, retryFailed = false) => {
+    const res = await apiJson<{ batch: BatchJob }>(
+      `/api/batches/${encodeURIComponent(id)}/resume`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ retryFailed }),
+      }
+    );
+    if (getServerlessRuntimeFlag() && res.batch) {
+      await saveServerlessBatches([res.batch]);
+    }
+    return res;
+  },
 
-  cancelBatch: (id: string) =>
-    apiJson<{ batch: BatchJob }>(`/api/batches/${id}/cancel`, { method: 'POST' }),
+  cancelBatch: async (id: string) => {
+    const res = await apiJson<{ batch: BatchJob }>(
+      `/api/batches/${encodeURIComponent(id)}/cancel`,
+      { method: 'POST' }
+    );
+    if (getServerlessRuntimeFlag() && res.batch) {
+      await saveServerlessBatches([res.batch]);
+    }
+    return res;
+  },
 
   getLogs: (limit = 150) => apiJson<{ logs: ProductionLogEntry[] }>(`/api/logs?limit=${limit}`),
 
-  getSettings: () =>
-    apiJson<{ settings: SystemSettings; storageBytes: number; assetsDir: string }>(
-      '/api/settings'
-    ),
+  getSettings: async () => {
+    const data = await apiJson<{
+      settings: SystemSettings;
+      storageBytes: number;
+      assetsDir: string;
+      isServerless?: boolean;
+    }>('/api/settings');
+    if (typeof data.isServerless === 'boolean') {
+      setServerlessRuntimeFlag(data.isServerless);
+    }
+    return data;
+  },
 
   saveSettings: (settings: Partial<SystemSettings>) =>
     apiJson<{ settings: SystemSettings }>('/api/settings', {
@@ -247,12 +504,54 @@ export async function downloadAssetFormat(
   format: 'svg' | 'eps' | 'png' | 'jpg'
 ): Promise<void> {
   const res = await fetch(`/api/assets/${encodeURIComponent(assetId)}/export/${format}`);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Failed to export ${format.toUpperCase()}`);
+  if (res.ok) {
+    const blob = await res.blob();
+    triggerBlobDownload(blob, `${assetId}.${format}`);
+    return;
   }
-  const blob = await res.blob();
-  triggerBlobDownload(blob, `${assetId}.${format}`);
+
+  if (getServerlessRuntimeFlag()) {
+    const cached = await getServerlessAsset(assetId);
+    if (cached?.svgContent) {
+      const statelessRes = await fetch('/api/export/single', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: cached.id,
+          title: cached.title,
+          svgContent: cached.svgContent,
+          format,
+        }),
+      });
+      if (statelessRes.ok) {
+        const blob = await statelessRes.blob();
+        triggerBlobDownload(blob, `${assetId}.${format}`);
+        return;
+      }
+      const statelessErr = await statelessRes.json().catch(() => ({}));
+      throw new Error(statelessErr.error || `Failed to export ${format.toUpperCase()}`);
+    }
+  }
+
+  const err = await res.json().catch(() => ({}));
+  throw new Error(err.error || `Failed to export ${format.toUpperCase()}`);
+}
+
+async function getMatchingCachedAssets(payload: {
+  assetIds?: string[];
+  batchId?: string;
+}): Promise<StockAsset[] | undefined> {
+  if (!getServerlessRuntimeFlag()) return undefined;
+  const cached = await getServerlessAssets();
+  if (cached.length === 0) return undefined;
+  if (Array.isArray(payload.assetIds) && payload.assetIds.length > 0) {
+    const idSet = new Set(payload.assetIds);
+    return cached.filter((a) => idSet.has(a.id));
+  }
+  if (payload.batchId) {
+    return cached.filter((a) => a.batchId === payload.batchId);
+  }
+  return cached;
 }
 
 export async function downloadExportBundle(payload: {
@@ -264,10 +563,11 @@ export async function downloadExportBundle(payload: {
   rasterSize?: number;
   jpgQuality?: number;
 }): Promise<void> {
+  const cachedAssets = await getMatchingCachedAssets(payload);
   const res = await fetch('/api/export/bundle', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(cachedAssets ? { ...payload, assets: cachedAssets } : payload),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -286,10 +586,11 @@ export async function downloadMetadataCsv(payload: {
   platform: 'adobe_stock' | 'shutterstock';
   fileExtension?: 'eps' | 'svg' | 'png' | 'jpg';
 }): Promise<void> {
+  const cachedAssets = await getMatchingCachedAssets(payload);
   const res = await fetch('/api/export/csv', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(cachedAssets ? { ...payload, assets: cachedAssets } : payload),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
