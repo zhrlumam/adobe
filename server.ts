@@ -1,11 +1,13 @@
 import path from 'node:path';
 import express from 'express';
 import { createApp } from './server/app.js';
+import { recoverInterruptedAnimationBatchesOnBoot } from './server/animationBatchRunner.js';
 
 export { createApp };
 
 async function startServer() {
   const app = createApp();
+  recoverInterruptedAnimationBatchesOnBoot();
   const isProd = process.env.NODE_ENV === 'production';
 
   if (!isProd) {

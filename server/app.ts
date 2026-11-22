@@ -31,13 +31,41 @@ import {
   resumeBatchJob,
 } from './batchRunner.js';
 import {
+  cancelAnimationBatchJob,
+  createAnimationBatchJob,
+  createAnimationProjectId,
+  getAnimationBatchJob,
+  listAnimationBatches,
+  pauseAnimationBatchJob,
+  resumeAnimationBatchJob,
+} from './animationBatchRunner.js';
+import {
+  RESOLUTION_MAP,
+  buildProceduralAnimationProject,
+  compileAnimatedSvg,
+  compileLottieJson,
+  computeProjectHash,
+  generateAnimationMetadata,
+  renderFrameSvgAtTime,
+} from './animationEngine.js';
+import {
   ADOBE_STOCK_CATEGORIES,
   SHUTTERSTOCK_CATEGORIES,
   buildAdobeStockCsv,
+  buildAnimationAdobeStockCsv,
+  buildAnimationShutterstockCsv,
   buildShutterstockCsv,
   normalizeKeywords,
 } from './metadataExport.js';
 import {
+  OUTPUT_ROOT,
+  deleteOutputRelativePath,
+  getOutputFolderStats,
+  getTotalOutputBytes,
+  resolveSafeRelativeOutputPath,
+} from './outputManager.js';
+import {
+  generateAnimationSpecWithProvider,
   getActiveProvider,
   getProviderBySlug,
   listProviders,
@@ -47,18 +75,35 @@ import {
   updateProviderConfig,
 } from './providers.js';
 import {
+  checkFfmpegCapabilities,
+  renderAndValidateAnimationProject,
+  renderOnDemandExportFormat,
+  saveAnimationProjectRecord,
+} from './renderPipeline.js';
+import {
   convertSvgToVectorEps,
   renderSvgToJpgBuffer,
   renderSvgToPngBuffer,
   sanitizeAndValidateSvg,
 } from './svgEngine.js';
+import { mapAnimationProjectRow } from './db.js';
 import type {
+  AnimationCategory,
+  AnimationExportFormat,
+  AnimationProject,
+  AnimationType,
+  BackgroundMode,
   DashboardSummary,
   DesignStyle,
+  FpsOption,
   ProviderSlug,
+  ResolutionPreset,
+  ReviewStatus,
   StockAsset,
   StockCategory,
+  SystemDiagnostics,
   TargetPlatform,
+  VisualStyle,
 } from '../src/types/stockforge.js';
 
 dotenv.config();
@@ -93,12 +138,48 @@ const VALID_STYLES = new Set<DesignStyle>([
 const VALID_PLATFORMS = new Set<TargetPlatform>(['both', 'adobe_stock', 'shutterstock']);
 const VALID_PROVIDERS = new Set<ProviderSlug>([
   'gemini',
+  'openai',
   'groq',
   'openrouter',
   'mistral',
   'huggingface',
   'ollama',
   'custom',
+]);
+
+const VALID_ANIMATION_CATEGORIES = new Set<AnimationCategory>([
+  'Motion Graphics',
+  'Green Screen Animation',
+  'Transparent Background Animation',
+  'Business & Technology',
+  'Nature & Environment',
+  'Medical & Healthcare',
+  'Educational & General Stock',
+]);
+
+const VALID_VISUAL_STYLES = new Set<VisualStyle>([
+  'Clean Vector Motion',
+  'Luminous Gradient',
+  'Minimal HUD',
+  'Isometric Tech',
+  'Organic Fluid',
+  'Broadcast Flat',
+]);
+
+const VALID_BG_MODES = new Set<BackgroundMode>(['transparent', 'green_screen', 'solid']);
+const VALID_RESOLUTIONS = new Set<ResolutionPreset>(['1920x1080', '3840x2160', '1080x1920', '1080x1080']);
+const VALID_FPS = new Set<number>([24, 25, 30, 60]);
+const VALID_EXPORT_FORMATS = new Set<AnimationExportFormat>([
+  'mp4_h264',
+  'mov_prores',
+  'mov_alpha',
+  'png_sequence',
+  'gif_preview',
+  'mp4_preview',
+  'thumbnail_png',
+  'svg_animated',
+  'lottie_json',
+  'source_zip',
 ]);
 
 function sanitizeDownloadName(raw: string): string {
@@ -214,10 +295,12 @@ export function createApp() {
 
   app.get('/api/health', (_req: Request, res: Response) => {
     const row = db.prepare('SELECT COUNT(*) as c FROM assets').get() as { c: number };
+    const animRow = db.prepare('SELECT COUNT(*) as c FROM animation_projects').get() as { c: number };
     res.json({
       ok: true,
       database: 'sqlite',
       assetCount: row.c,
+      animationCount: animRow.c,
       isServerless: IS_SERVERLESS,
     });
   });
@@ -1042,6 +1125,658 @@ export function createApp() {
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename="${clean}"`);
     res.sendFile(target);
+  });
+
+  // ============================================================================
+  // STOCKFORGE ANIMATION STUDIO ROUTES
+  // ============================================================================
+
+  app.get('/api/diagnostics', async (_req: Request, res: Response) => {
+    try {
+      const caps = await checkFfmpegCapabilities();
+      const totalProjects = (
+        db.prepare('SELECT COUNT(*) as c FROM animation_projects').get() as { c: number }
+      ).c;
+      const completedProjects = (
+        db
+          .prepare(`SELECT COUNT(*) as c FROM animation_projects WHERE status = 'completed'`)
+          .get() as { c: number }
+      ).c;
+      const failedProjects = (
+        db
+          .prepare(`SELECT COUNT(*) as c FROM animation_projects WHERE status = 'failed'`)
+          .get() as { c: number }
+      ).c;
+      const approvedProjects = (
+        db
+          .prepare(`SELECT COUNT(*) as c FROM animation_projects WHERE review_status = 'approved'`)
+          .get() as { c: number }
+      ).c;
+      const totalBatches = (
+        db.prepare('SELECT COUNT(*) as c FROM animation_batches').get() as { c: number }
+      ).c;
+
+      const diagnostics: SystemDiagnostics = {
+        nodeVersion: process.version,
+        platform: process.platform,
+        ffmpegAvailable: caps.ffmpegAvailable,
+        ffmpegVersion: caps.ffmpegVersion,
+        ffprobeAvailable: caps.ffprobeAvailable,
+        proresAlphaSupported: caps.proresAlphaSupported,
+        h264Supported: caps.h264Supported,
+        outputRoot: OUTPUT_ROOT,
+        outputFolders: getOutputFolderStats(),
+        totalProjects,
+        completedProjects,
+        failedProjects,
+        approvedProjects,
+        totalBatches,
+        storageBytes: getStorageBytes() + getTotalOutputBytes(),
+      };
+      res.json(diagnostics);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.get(/^\/api\/output-file\/(.+)$/, (req: Request, res: Response) => {
+    const rel = decodeURIComponent(String(req.params[0] || ''));
+    const resolved = resolveSafeRelativeOutputPath(rel);
+    if (!resolved || !fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+      return res.status(404).json({ error: 'Output artifact not found' });
+    }
+    res.sendFile(resolved);
+  });
+
+  app.get('/api/animations', (req: Request, res: Response) => {
+    const q = String(req.query.q ?? '').trim().toLowerCase();
+    const category = String(req.query.category ?? 'all');
+    const backgroundMode = String(req.query.backgroundMode ?? 'all');
+    const status = String(req.query.status ?? 'all');
+    const reviewStatus = String(req.query.reviewStatus ?? 'all');
+    const batchId = String(req.query.batchId ?? '');
+
+    const rows = db
+      .prepare('SELECT * FROM animation_projects ORDER BY created_at DESC')
+      .all() as Record<string, unknown>[];
+
+    let projects = rows.map(mapAnimationProjectRow);
+    if (category !== 'all') projects = projects.filter((p) => p.category === category);
+    if (backgroundMode !== 'all') projects = projects.filter((p) => p.backgroundMode === backgroundMode);
+    if (status !== 'all') projects = projects.filter((p) => p.status === status);
+    if (reviewStatus !== 'all') projects = projects.filter((p) => p.reviewStatus === reviewStatus);
+    if (batchId) projects = projects.filter((p) => p.batchId === batchId);
+    if (q) {
+      projects = projects.filter(
+        (p) =>
+          p.id.toLowerCase().includes(q) ||
+          p.name.toLowerCase().includes(q) ||
+          p.prompt.toLowerCase().includes(q) ||
+          p.metadata.title.toLowerCase().includes(q) ||
+          p.metadata.keywords.some((k) => k.toLowerCase().includes(q))
+      );
+    }
+
+    res.json({
+      projects,
+      adobeCategories: ADOBE_STOCK_CATEGORIES,
+      shutterstockCategories: SHUTTERSTOCK_CATEGORIES,
+    });
+  });
+
+  app.post('/api/animations/create', async (req: Request, res: Response) => {
+    try {
+      const {
+        name,
+        prompt,
+        category = 'Motion Graphics',
+        animationType,
+        visualStyle = 'Clean Vector Motion',
+        backgroundMode = 'solid',
+        backgroundColor,
+        resolution = '1920x1080',
+        durationSec = 3,
+        fps = 30,
+        targetPlatform = 'both',
+        providerSlug = 'procedural',
+        model,
+        exportFormats,
+        renderNow = true,
+      } = req.body ?? {};
+
+      if (typeof prompt !== 'string' || prompt.trim().length < 3) {
+        return res.status(400).json({ error: 'Animation prompt must be at least 3 characters long.' });
+      }
+      if (!VALID_ANIMATION_CATEGORIES.has(category)) {
+        return res.status(400).json({ error: 'Invalid animation category.' });
+      }
+      if (!VALID_VISUAL_STYLES.has(visualStyle)) {
+        return res.status(400).json({ error: 'Invalid visual style.' });
+      }
+      if (!VALID_BG_MODES.has(backgroundMode)) {
+        return res.status(400).json({ error: 'Invalid background mode.' });
+      }
+      if (!VALID_RESOLUTIONS.has(resolution)) {
+        return res.status(400).json({ error: 'Invalid resolution preset.' });
+      }
+      const numFps = (VALID_FPS.has(Number(fps)) ? Number(fps) : 30) as FpsOption;
+      const numDur = Math.min(15, Math.max(1.5, Number(durationSec) || 3));
+      const projectId = createAnimationProjectId();
+
+      let project: AnimationProject;
+      if (providerSlug !== 'procedural' && VALID_PROVIDERS.has(providerSlug)) {
+        const aiRes = await generateAnimationSpecWithProvider({
+          id: projectId,
+          name: typeof name === 'string' ? name : undefined,
+          prompt: prompt.trim(),
+          category,
+          animationType: animationType as AnimationType | undefined,
+          visualStyle,
+          backgroundMode,
+          backgroundColor: typeof backgroundColor === 'string' ? backgroundColor : undefined,
+          resolution,
+          durationSec: numDur,
+          fps: numFps,
+          targetPlatform: VALID_PLATFORMS.has(targetPlatform) ? targetPlatform : 'both',
+          providerSlug,
+          model: typeof model === 'string' ? model : undefined,
+        });
+        project = aiRes.project;
+      } else {
+        project = buildProceduralAnimationProject({
+          id: projectId,
+          name: typeof name === 'string' ? name : undefined,
+          prompt: prompt.trim(),
+          category,
+          animationType: animationType as AnimationType | undefined,
+          visualStyle,
+          backgroundMode,
+          backgroundColor: typeof backgroundColor === 'string' ? backgroundColor : undefined,
+          resolution,
+          durationSec: numDur,
+          fps: numFps,
+          targetPlatform: VALID_PLATFORMS.has(targetPlatform) ? targetPlatform : 'both',
+        });
+      }
+
+      if (!renderNow) {
+        const saved = saveAnimationProjectRecord(project);
+        return res.status(201).json({ project: saved });
+      }
+
+      const validFormats = Array.isArray(exportFormats)
+        ? exportFormats.filter((f): f is AnimationExportFormat => VALID_EXPORT_FORMATS.has(f))
+        : undefined;
+
+      const rendered = await renderAndValidateAnimationProject(project, validFormats);
+      res.status(rendered.status === 'failed' ? 422 : 201).json({
+        project: rendered,
+        error: rendered.status === 'failed' ? rendered.errorMessage : undefined,
+      });
+    } catch (err) {
+      res.status(422).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.get('/api/animations/:id', (req: Request, res: Response) => {
+    const row = db.prepare('SELECT * FROM animation_projects WHERE id = ?').get(req.params.id) as
+      | Record<string, unknown>
+      | undefined;
+    if (!row) return res.status(404).json({ error: 'Animation project not found' });
+    res.json({ project: mapAnimationProjectRow(row) });
+  });
+
+  app.get('/api/animations/:id/source', (req: Request, res: Response) => {
+    const row = db.prepare('SELECT * FROM animation_projects WHERE id = ?').get(req.params.id) as
+      | Record<string, unknown>
+      | undefined;
+    if (!row) return res.status(404).json({ error: 'Animation project not found' });
+    const project = mapAnimationProjectRow(row);
+    const svgAnimated = compileAnimatedSvg(project);
+    const lottieJson = compileLottieJson(project);
+    res.json({ svgAnimated, lottieJson, project });
+  });
+
+  app.post('/api/animations/:id/frame-svg', (req: Request, res: Response) => {
+    const row = db.prepare('SELECT * FROM animation_projects WHERE id = ?').get(req.params.id) as
+      | Record<string, unknown>
+      | undefined;
+    if (!row) return res.status(404).json({ error: 'Animation project not found' });
+    const project = mapAnimationProjectRow(row);
+    const { timeSec = 0, projectOverride } = req.body ?? {};
+    const merged: AnimationProject =
+      projectOverride && typeof projectOverride === 'object'
+        ? {
+            ...project,
+            ...(Array.isArray(projectOverride.layers) ? { layers: projectOverride.layers } : {}),
+            ...(Array.isArray(projectOverride.palette) ? { palette: projectOverride.palette } : {}),
+            ...(VALID_BG_MODES.has(projectOverride.backgroundMode)
+              ? { backgroundMode: projectOverride.backgroundMode }
+              : {}),
+            ...(typeof projectOverride.backgroundColor === 'string'
+              ? { backgroundColor: projectOverride.backgroundColor }
+              : {}),
+            ...(typeof projectOverride.durationSec === 'number'
+              ? { durationSec: Math.min(15, Math.max(1.5, projectOverride.durationSec)) }
+              : {}),
+          }
+        : project;
+
+    const svg = renderFrameSvgAtTime(merged, Number(timeSec) || 0);
+    res.json({ svg, timeSec: Number(timeSec) || 0 });
+  });
+
+  app.patch('/api/animations/:id', async (req: Request, res: Response) => {
+    try {
+      const row = db.prepare('SELECT * FROM animation_projects WHERE id = ?').get(req.params.id) as
+        | Record<string, unknown>
+        | undefined;
+      if (!row) return res.status(404).json({ error: 'Animation project not found' });
+      const existing = mapAnimationProjectRow(row);
+
+      const {
+        name,
+        prompt,
+        backgroundMode,
+        backgroundColor,
+        resolution,
+        durationSec,
+        fps,
+        palette,
+        layers,
+        metadata,
+        reRender = false,
+        exportFormats,
+      } = req.body ?? {};
+
+      const nextRes = VALID_RESOLUTIONS.has(resolution) ? (resolution as ResolutionPreset) : existing.resolution;
+      const dims = RESOLUTION_MAP[nextRes];
+      const nextBgMode: BackgroundMode = VALID_BG_MODES.has(backgroundMode)
+        ? backgroundMode
+        : existing.backgroundMode;
+      const nextBgColor =
+        nextBgMode === 'green_screen'
+          ? '#00FF00'
+          : nextBgMode === 'transparent'
+          ? 'transparent'
+          : typeof backgroundColor === 'string' && backgroundColor.trim()
+          ? backgroundColor.trim()
+          : existing.backgroundColor === 'transparent' || existing.backgroundColor === '#00FF00'
+          ? '#0B1020'
+          : existing.backgroundColor;
+
+      const updatedProject: AnimationProject = {
+        ...existing,
+        name: typeof name === 'string' && name.trim() ? name.trim().slice(0, 120) : existing.name,
+        prompt: typeof prompt === 'string' && prompt.trim() ? prompt.trim() : existing.prompt,
+        backgroundMode: nextBgMode,
+        backgroundColor: nextBgColor,
+        resolution: nextRes,
+        width: dims.width,
+        height: dims.height,
+        durationSec:
+          typeof durationSec === 'number'
+            ? Math.min(15, Math.max(1.5, durationSec))
+            : existing.durationSec,
+        fps: VALID_FPS.has(Number(fps)) ? (Number(fps) as FpsOption) : existing.fps,
+        palette: Array.isArray(palette) ? palette.map(String) : existing.palette,
+        layers: Array.isArray(layers) ? layers : existing.layers,
+        metadata: metadata && typeof metadata === 'object' ? {
+          ...existing.metadata,
+          ...metadata,
+          keywords: Array.isArray(metadata.keywords)
+            ? normalizeKeywords(metadata.keywords.map(String), {
+                prompt: existing.prompt,
+                category: 'Abstract',
+                style: existing.visualStyle,
+              })
+            : existing.metadata.keywords,
+        } : existing.metadata,
+        pipelineStage: reRender ? 'rendering_requested' : 'project_edited',
+      };
+      updatedProject.projectHash = computeProjectHash(updatedProject);
+
+      if (reRender) {
+        const validFormats = Array.isArray(exportFormats)
+          ? exportFormats.filter((f): f is AnimationExportFormat => VALID_EXPORT_FORMATS.has(f))
+          : existing.outputFiles.map((f) => f.format);
+        const rendered = await renderAndValidateAnimationProject(updatedProject, validFormats);
+        return res.json({ project: rendered });
+      }
+
+      const saved = saveAnimationProjectRecord(updatedProject);
+      addProductionLog({
+        eventType: 'animation_project_edited',
+        assetId: saved.id,
+        status: 'info',
+        message: `Updated editable project ${saved.id} (${saved.layers.length} layers, ${saved.durationSec}s @ ${saved.fps}fps)`,
+      });
+      res.json({ project: saved });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.post('/api/animations/:id/duplicate', (req: Request, res: Response) => {
+    const row = db.prepare('SELECT * FROM animation_projects WHERE id = ?').get(req.params.id) as
+      | Record<string, unknown>
+      | undefined;
+    if (!row) return res.status(404).json({ error: 'Animation project not found' });
+    const existing = mapAnimationProjectRow(row);
+    const now = new Date().toISOString();
+    const copyId = createAnimationProjectId();
+    const copy: AnimationProject = {
+      ...existing,
+      id: copyId,
+      batchId: null,
+      name: `${existing.name} (Copy)`,
+      status: 'draft',
+      pipelineStage: 'duplicated',
+      reviewStatus: 'pending_review',
+      qaReport: null,
+      outputFiles: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+    const saved = saveAnimationProjectRecord(copy);
+    res.status(201).json({ project: saved });
+  });
+
+  app.post('/api/animations/:id/render', async (req: Request, res: Response) => {
+    try {
+      const row = db.prepare('SELECT * FROM animation_projects WHERE id = ?').get(req.params.id) as
+        | Record<string, unknown>
+        | undefined;
+      if (!row) return res.status(404).json({ error: 'Animation project not found' });
+      const existing = mapAnimationProjectRow(row);
+      const { exportFormats } = req.body ?? {};
+      const validFormats = Array.isArray(exportFormats)
+        ? exportFormats.filter((f): f is AnimationExportFormat => VALID_EXPORT_FORMATS.has(f))
+        : undefined;
+      const rendered = await renderAndValidateAnimationProject(existing, validFormats);
+      res.status(rendered.status === 'failed' ? 422 : 200).json({
+        project: rendered,
+        error: rendered.status === 'failed' ? rendered.errorMessage : undefined,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.post('/api/animations/:id/review', (req: Request, res: Response) => {
+    const row = db.prepare('SELECT * FROM animation_projects WHERE id = ?').get(req.params.id) as
+      | Record<string, unknown>
+      | undefined;
+    if (!row) return res.status(404).json({ error: 'Animation project not found' });
+    const existing = mapAnimationProjectRow(row);
+    const reviewStatus = req.body?.reviewStatus as ReviewStatus;
+    if (!['approved', 'rejected', 'pending_review'].includes(reviewStatus)) {
+      return res.status(400).json({ error: 'Invalid reviewStatus' });
+    }
+    if (reviewStatus === 'approved' && (existing.status !== 'completed' || !existing.qaReport?.passed)) {
+      return res.status(400).json({
+        error: 'Cannot approve an animation project that has not passed automated QA validation.',
+      });
+    }
+    existing.reviewStatus = reviewStatus;
+    const saved = saveAnimationProjectRecord(existing);
+    addProductionLog({
+      eventType: 'animation_manual_review',
+      assetId: saved.id,
+      status: reviewStatus === 'approved' ? 'success' : 'info',
+      message: `Manual review set ${saved.id} to ${reviewStatus}`,
+    });
+    res.json({ project: saved });
+  });
+
+  app.post('/api/animations/:id/regenerate-metadata', (req: Request, res: Response) => {
+    const row = db.prepare('SELECT * FROM animation_projects WHERE id = ?').get(req.params.id) as
+      | Record<string, unknown>
+      | undefined;
+    if (!row) return res.status(404).json({ error: 'Animation project not found' });
+    const existing = mapAnimationProjectRow(row);
+    const regenerated = generateAnimationMetadata({ ...existing, metadata: { ...existing.metadata, adobeCategory: '', shutterstockCategory: '' } });
+    existing.metadata = regenerated;
+    const saved = saveAnimationProjectRecord(existing);
+    res.json({ project: saved });
+  });
+
+  app.delete('/api/animations/:id', (req: Request, res: Response) => {
+    const row = db.prepare('SELECT * FROM animation_projects WHERE id = ?').get(req.params.id) as
+      | Record<string, unknown>
+      | undefined;
+    if (!row) return res.status(404).json({ error: 'Animation project not found' });
+    const existing = mapAnimationProjectRow(row);
+    for (const file of existing.outputFiles) {
+      deleteOutputRelativePath(file.relativePath);
+    }
+    deleteOutputRelativePath(`projects/${existing.id}.json`);
+    deleteOutputRelativePath(`metadata/${existing.id}-metadata.json`);
+    db.prepare('DELETE FROM animation_projects WHERE id = ?').run(existing.id);
+    addProductionLog({
+      eventType: 'animation_deleted',
+      assetId: existing.id,
+      status: 'info',
+      message: `Deleted animation project ${existing.id}`,
+    });
+    res.json({ ok: true });
+  });
+
+  app.get('/api/animations/:id/download/:format', async (req: Request, res: Response) => {
+    try {
+      const format = String(req.params.format) as AnimationExportFormat;
+      if (!VALID_EXPORT_FORMATS.has(format)) {
+        return res.status(400).json({ error: 'Unsupported animation export format.' });
+      }
+      const row = db.prepare('SELECT * FROM animation_projects WHERE id = ?').get(req.params.id) as
+        | Record<string, unknown>
+        | undefined;
+      if (!row) return res.status(404).json({ error: 'Animation project not found' });
+      const project = mapAnimationProjectRow(row);
+      const file = await renderOnDemandExportFormat(project, format);
+      res.setHeader('Content-Type', file.mimeType);
+      res.setHeader('Content-Disposition', `attachment; filename="${sanitizeDownloadName(file.filename)}"`);
+      res.sendFile(file.filePath);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.post('/api/animations/export-csv', (req: Request, res: Response) => {
+    const { projectIds, batchId, platform = 'adobe_stock', fileExtension = 'mp4' } = req.body ?? {};
+    let rows: Record<string, unknown>[] = [];
+    if (Array.isArray(projectIds) && projectIds.length > 0) {
+      const placeholders = projectIds.map(() => '?').join(',');
+      rows = db
+        .prepare(`SELECT * FROM animation_projects WHERE id IN (${placeholders}) ORDER BY created_at DESC`)
+        .all(...projectIds.map(String)) as Record<string, unknown>[];
+    } else if (typeof batchId === 'string' && batchId.trim()) {
+      rows = db
+        .prepare('SELECT * FROM animation_projects WHERE batch_id = ? ORDER BY created_at DESC')
+        .all(batchId.trim()) as Record<string, unknown>[];
+    } else {
+      rows = db
+        .prepare(`SELECT * FROM animation_projects WHERE status = 'completed' ORDER BY created_at DESC`)
+        .all() as Record<string, unknown>[];
+    }
+    const projects = rows.map(mapAnimationProjectRow);
+    const ext = ['mp4', 'mov', 'svg'].includes(String(fileExtension))
+      ? (String(fileExtension) as 'mp4' | 'mov' | 'svg')
+      : 'mp4';
+
+    if (platform === 'shutterstock') {
+      const csv = buildAnimationShutterstockCsv(projects, ext);
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="shutterstock-animations.csv"');
+      return res.send(csv);
+    }
+    const csv = buildAnimationAdobeStockCsv(projects, ext);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="adobe-stock-animations.csv"');
+    return res.send(csv);
+  });
+
+  app.post('/api/animations/export-zip', async (req: Request, res: Response) => {
+    try {
+      const {
+        projectIds,
+        batchId,
+        formats = ['mp4_h264', 'svg_animated', 'lottie_json', 'source_zip'],
+        includeAdobeCsv = true,
+        includeShutterstockCsv = true,
+      } = req.body ?? {};
+
+      let rows: Record<string, unknown>[] = [];
+      if (Array.isArray(projectIds) && projectIds.length > 0) {
+        const placeholders = projectIds.map(() => '?').join(',');
+        rows = db
+          .prepare(`SELECT * FROM animation_projects WHERE id IN (${placeholders}) ORDER BY created_at DESC`)
+          .all(...projectIds.map(String)) as Record<string, unknown>[];
+      } else if (typeof batchId === 'string' && batchId.trim()) {
+        rows = db
+          .prepare('SELECT * FROM animation_projects WHERE batch_id = ? ORDER BY created_at DESC')
+          .all(batchId.trim()) as Record<string, unknown>[];
+      } else {
+        rows = db
+          .prepare(`SELECT * FROM animation_projects WHERE status = 'completed' ORDER BY created_at DESC`)
+          .all() as Record<string, unknown>[];
+      }
+
+      const projects = rows.map(mapAnimationProjectRow);
+      if (projects.length === 0) {
+        return res.status(400).json({ error: 'No matching animation projects found to export.' });
+      }
+
+      const requestedFormats = Array.isArray(formats)
+        ? formats.filter((f): f is AnimationExportFormat => VALID_EXPORT_FORMATS.has(f))
+        : (['mp4_h264', 'svg_animated', 'source_zip'] as AnimationExportFormat[]);
+
+      const zip = new JSZip();
+      for (const project of projects) {
+        for (const fmt of requestedFormats) {
+          if (fmt === 'mov_alpha' && project.backgroundMode !== 'transparent') continue;
+          const file = await renderOnDemandExportFormat(project, fmt);
+          zip.file(`${project.id}/${file.filename}`, fs.readFileSync(file.filePath));
+        }
+      }
+      if (includeAdobeCsv) {
+        zip.file('metadata/adobe-stock-animations.csv', buildAnimationAdobeStockCsv(projects, 'mp4'));
+      }
+      if (includeShutterstockCsv) {
+        zip.file('metadata/shutterstock-animations.csv', buildAnimationShutterstockCsv(projects, 'mp4'));
+      }
+
+      const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+      const zipName = batchId
+        ? `${sanitizeDownloadName(batchId)}-animations.zip`
+        : `stockforge-animations-${projects.length}.zip`;
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="${zipName}"`);
+      res.send(buf);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // --- Animation Batches ---
+  app.get('/api/animation-batches', (_req: Request, res: Response) => {
+    res.json({ batches: listAnimationBatches() });
+  });
+
+  app.post('/api/animation-batches', (req: Request, res: Response) => {
+    try {
+      const {
+        name,
+        basePrompt,
+        category = 'Motion Graphics',
+        animationType = 'mixed',
+        visualStyle = 'Clean Vector Motion',
+        backgroundMode = 'solid',
+        resolution = '1920x1080',
+        durationSec = 3,
+        fps = 30,
+        providerSlug = 'procedural',
+        model = 'stockforge-procedural-v1',
+        requestedCount = 5,
+        concurrency = 2,
+        exportFormats = ['mp4_h264', 'mp4_preview', 'gif_preview', 'thumbnail_png', 'svg_animated', 'lottie_json', 'source_zip'],
+      } = req.body ?? {};
+
+      if (typeof basePrompt !== 'string' || basePrompt.trim().length < 3) {
+        return res.status(400).json({ error: 'Base prompt must be at least 3 characters.' });
+      }
+      if (!VALID_ANIMATION_CATEGORIES.has(category)) {
+        return res.status(400).json({ error: 'Invalid animation category.' });
+      }
+      if (!VALID_VISUAL_STYLES.has(visualStyle)) {
+        return res.status(400).json({ error: 'Invalid visual style.' });
+      }
+      if (!VALID_BG_MODES.has(backgroundMode)) {
+        return res.status(400).json({ error: 'Invalid background mode.' });
+      }
+      if (!VALID_RESOLUTIONS.has(resolution)) {
+        return res.status(400).json({ error: 'Invalid resolution preset.' });
+      }
+
+      if (providerSlug !== 'procedural') {
+        if (!VALID_PROVIDERS.has(providerSlug)) {
+          return res.status(400).json({ error: 'Invalid provider.' });
+        }
+        const prov = getProviderBySlug(providerSlug);
+        if (prov.catalog.requiresApiKey && !prov.hasKey) {
+          return res.status(400).json({
+            error: `Provider "${prov.name}" requires an API key before starting a batch, or select Procedural Engine.`,
+          });
+        }
+      }
+
+      const batch = createAnimationBatchJob({
+        name: typeof name === 'string' ? name : `${category} Batch`,
+        basePrompt,
+        category,
+        animationType,
+        visualStyle,
+        backgroundMode,
+        resolution,
+        durationSec: Math.min(15, Math.max(1.5, Number(durationSec) || 3)),
+        fps: (VALID_FPS.has(Number(fps)) ? Number(fps) : 30) as FpsOption,
+        providerSlug,
+        model: String(model || 'stockforge-procedural-v1'),
+        requestedCount: Number(requestedCount) || 5,
+        concurrency: Number(concurrency) || 2,
+        exportFormats: Array.isArray(exportFormats)
+          ? exportFormats.filter((f): f is AnimationExportFormat => VALID_EXPORT_FORMATS.has(f))
+          : ['mp4_h264', 'svg_animated', 'lottie_json', 'source_zip'],
+      });
+      res.status(201).json({ batch });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.get('/api/animation-batches/:id', (req: Request, res: Response) => {
+    const batch = getAnimationBatchJob(req.params.id, true);
+    if (!batch) return res.status(404).json({ error: 'Animation batch not found' });
+    res.json({ batch });
+  });
+
+  app.post('/api/animation-batches/:id/pause', (req: Request, res: Response) => {
+    const batch = pauseAnimationBatchJob(req.params.id);
+    if (!batch) return res.status(404).json({ error: 'Animation batch not found' });
+    res.json({ batch });
+  });
+
+  app.post('/api/animation-batches/:id/resume', (req: Request, res: Response) => {
+    const retryFailed = Boolean(req.body?.retryFailed);
+    const batch = resumeAnimationBatchJob(req.params.id, retryFailed);
+    if (!batch) return res.status(404).json({ error: 'Animation batch not found' });
+    res.json({ batch });
+  });
+
+  app.post('/api/animation-batches/:id/cancel', (req: Request, res: Response) => {
+    const batch = cancelAnimationBatchJob(req.params.id);
+    if (!batch) return res.status(404).json({ error: 'Animation batch not found' });
+    res.json({ batch });
   });
 
   app.use('/api', (_req: Request, res: Response) => {

@@ -1,97 +1,83 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, RefreshCw, Save, X } from 'lucide-react';
-import { api, downloadMetadataCsv } from '../lib/api';
-import type { StockAsset, TargetPlatform } from '../types/stockforge';
-import { SvgViewport } from './SvgViewport';
+import { Download, RefreshCw, Save, Sparkles } from 'lucide-react';
+import { api, downloadAnimationCsv } from '../lib/api';
+import type { AnimationProject } from '../types/stockforge';
 
 interface MetadataEditorViewProps {
   onNotify: (msg: string) => void;
-  refreshTick: number;
+  refreshTick?: number;
 }
 
 export const MetadataEditorView: React.FC<MetadataEditorViewProps> = ({
   onNotify,
-  refreshTick,
+  refreshTick = 0,
 }) => {
-  const [assets, setAssets] = useState<StockAsset[]>([]);
+  const [projects, setProjects] = useState<AnimationProject[]>([]);
+  const [selectedId, setSelectedId] = useState<string>('');
   const [adobeCategories, setAdobeCategories] = useState<string[]>([]);
   const [shutterstockCategories, setShutterstockCategories] = useState<string[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [keywords, setKeywords] = useState<string[]>([]);
-  const [newKeyword, setNewKeyword] = useState('');
-  const [adobeCat, setAdobeCat] = useState('');
-  const [shutterCat, setShutterCat] = useState('');
-  const [platform, setPlatform] = useState<TargetPlatform>('both');
+  const [keywordsText, setKeywordsText] = useState('');
+  const [adobeCategory, setAdobeCategory] = useState('');
+  const [shutterstockCategory, setShutterstockCategory] = useState('');
   const [saving, setSaving] = useState(false);
-  const [regenerating, setRegenerating] = useState(false);
 
-  const loadData = async () => {
+  const loadProjects = async () => {
     try {
-      const data = await api.getAssets();
-      const assetList = Array.isArray(data?.assets) ? data.assets : [];
-      setAssets(assetList);
-      setAdobeCategories(Array.isArray(data?.adobeCategories) ? data.adobeCategories : []);
-      setShutterstockCategories(
-        Array.isArray(data?.shutterstockCategories) ? data.shutterstockCategories : []
-      );
-      if (assetList.length > 0 && !selectedId) {
-        setSelectedId(assetList[0].id);
+      const res = await api.listAnimations();
+      const list = res.projects ?? [];
+      setProjects(list);
+      setAdobeCategories(res.adobeCategories ?? []);
+      setShutterstockCategories(res.shutterstockCategories ?? []);
+      if (list.length > 0 && !selectedId) {
+        selectProject(list[0]);
+      } else if (selectedId) {
+        const match = list.find((p) => p.id === selectedId);
+        if (match) selectProject(match);
       }
     } catch (err) {
-      onNotify(err instanceof Error ? err.message : 'Failed to load assets');
+      onNotify(err instanceof Error ? err.message : 'Failed to load metadata');
     }
   };
 
+  const selectProject = (p: AnimationProject) => {
+    setSelectedId(p.id);
+    setTitle(p.metadata.title);
+    setDescription(p.metadata.description);
+    setKeywordsText(p.metadata.keywords.join(', '));
+    setAdobeCategory(p.metadata.adobeCategory);
+    setShutterstockCategory(p.metadata.shutterstockCategory);
+  };
+
   useEffect(() => {
-    void loadData();
+    void loadProjects();
   }, [refreshTick]);
 
-  const current = assets.find((a) => a.id === selectedId) ?? null;
-
-  useEffect(() => {
-    if (current) {
-      setTitle(current.title);
-      setDescription(current.description);
-      setKeywords(current.keywords);
-      setAdobeCat(current.adobeCategory);
-      setShutterCat(current.shutterstockCategory);
-      setPlatform(current.targetPlatform);
-    }
-  }, [current?.id]);
-
-  const handleAddKeyword = () => {
-    const incoming = newKeyword
-      .split(',')
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean);
-    if (incoming.length === 0) return;
-    setKeywords((prev) => Array.from(new Set([...prev, ...incoming])).slice(0, 49));
-    setNewKeyword('');
-  };
-
-  const handleRemoveKeyword = (term: string) => {
-    setKeywords((prev) => prev.filter((k) => k !== term));
-  };
+  const current = projects.find((p) => p.id === selectedId);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!current) return;
     setSaving(true);
     try {
-      const { asset: updated } = await api.updateAsset(current.id, {
-        title,
-        description,
-        keywords,
-        adobeCategory: adobeCat,
-        shutterstockCategory: shutterCat,
-        targetPlatform: platform,
+      const keywords = keywordsText
+        .split(',')
+        .map((k) => k.trim())
+        .filter(Boolean);
+      await api.updateAnimation(current.id, {
+        metadata: {
+          ...current.metadata,
+          title: title.trim(),
+          description: description.trim(),
+          keywords,
+          adobeCategory,
+          shutterstockCategory,
+        },
       });
-      setAssets((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
-      setKeywords(updated.keywords);
-      onNotify(`Saved marketplace metadata for ${updated.id}`);
+      await loadProjects();
+      onNotify(`Saved commercial stock metadata for ${current.id}`);
     } catch (err) {
       onNotify(err instanceof Error ? err.message : 'Save failed');
     } finally {
@@ -101,20 +87,13 @@ export const MetadataEditorView: React.FC<MetadataEditorViewProps> = ({
 
   const handleRegenerate = async () => {
     if (!current) return;
-    setRegenerating(true);
     try {
-      const { asset: updated } = await api.regenerateAssetMetadata(current.id);
-      setAssets((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
-      setTitle(updated.title);
-      setDescription(updated.description);
-      setKeywords(updated.keywords);
-      setAdobeCat(updated.adobeCategory);
-      setShutterCat(updated.shutterstockCategory);
-      onNotify(`Refreshed metadata via AI for ${updated.id}`);
+      const res = await api.regenerateAnimationMetadata(current.id);
+      selectProject(res.project);
+      await loadProjects();
+      onNotify(`Regenerated clean metadata for ${current.id}`);
     } catch (err) {
-      onNotify(err instanceof Error ? err.message : 'Regeneration failed');
-    } finally {
-      setRegenerating(false);
+      onNotify(err instanceof Error ? err.message : 'Metadata regeneration failed');
     }
   };
 
@@ -122,249 +101,187 @@ export const MetadataEditorView: React.FC<MetadataEditorViewProps> = ({
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-900 tracking-tight">
-            Stock Metadata Editor
+          <h1 className="text-2xl font-semibold text-slate-50 tracking-tight">
+            Stock Metadata Manager
           </h1>
-          <p className="text-sm text-slate-600 mt-1">
-            Refine titles, descriptions, 10–49 non-stuffed keywords, and marketplace categories for Adobe Stock and Shutterstock.
+          <p className="text-sm text-slate-400 mt-1">
+            Review commercial titles, clean non-spam keywords, and export Adobe Stock & Shutterstock CSV spreadsheets.
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            disabled={assets.length === 0}
-            onClick={() => downloadMetadataCsv({ platform: 'adobe_stock' })}
-            className="px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:border-slate-300 rounded-md cursor-pointer disabled:opacity-40"
+            onClick={() =>
+              void downloadAnimationCsv({ platform: 'adobe_stock', fileExtension: 'mp4' }).catch(
+                (err) => onNotify(err instanceof Error ? err.message : 'CSV export failed')
+              )
+            }
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-[#121722] border border-slate-800 hover:border-[#3B82F6] rounded-md cursor-pointer"
           >
-            Export Adobe Stock CSV
+            <Download className="w-3.5 h-3.5" />
+            <span>Adobe Stock CSV</span>
           </button>
           <button
             type="button"
-            disabled={assets.length === 0}
-            onClick={() => downloadMetadataCsv({ platform: 'shutterstock' })}
-            className="px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:border-slate-300 rounded-md cursor-pointer disabled:opacity-40"
+            onClick={() =>
+              void downloadAnimationCsv({ platform: 'shutterstock', fileExtension: 'mp4' }).catch(
+                (err) => onNotify(err instanceof Error ? err.message : 'CSV export failed')
+              )
+            }
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-200 bg-[#121722] border border-slate-800 hover:border-[#3B82F6] rounded-md cursor-pointer"
           >
-            Export Shutterstock CSV
+            <Download className="w-3.5 h-3.5" />
+            <span>Shutterstock CSV</span>
           </button>
         </div>
       </div>
 
-      {assets.length === 0 ? (
-        <div className="bg-white border border-dashed border-slate-300 rounded-lg p-12 text-center text-xs text-slate-500">
-          Generate at least one vector asset to edit and export marketplace metadata.
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Asset selector list */}
-          <div className="lg:col-span-4 bg-white border border-slate-200 rounded-lg divide-y divide-slate-100 max-h-[700px] overflow-y-auto">
-            {assets.map((a) => (
-              <button
-                key={a.id}
-                type="button"
-                onClick={() => setSelectedId(a.id)}
-                className={`w-full text-left p-3 flex items-center gap-3 hover:bg-slate-50 cursor-pointer ${
-                  selectedId === a.id ? 'bg-blue-50/40' : ''
-                }`}
-              >
-                <SvgViewport
-                  svgContent={a.svgContent}
-                  backdrop="white"
-                  className="w-12 h-12 rounded border border-slate-200 shrink-0"
-                />
-                <div className="min-w-0">
-                  <div className="text-[11px] font-mono text-slate-500">{a.id}</div>
-                  <div className="text-xs font-medium text-slate-900 truncate">{a.title}</div>
-                  <div className="text-[11px] text-slate-500 font-mono tabular-nums">
-                    {a.keywords.length} keywords
-                  </div>
-                </div>
-              </button>
-            ))}
-          </div>
-
-          {/* Right Editor */}
-          {current && (
-            <form
-              onSubmit={handleSave}
-              className="lg:col-span-8 bg-white border border-slate-200 rounded-lg p-6 space-y-5"
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Left: Project Selector List */}
+        <div className="lg:col-span-4 bg-[#121722] border border-slate-800 rounded-lg p-4 space-y-2 max-h-[600px] overflow-y-auto">
+          <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+            <span className="text-xs font-semibold text-slate-200">
+              Projects ({projects.length})
+            </span>
+            <button
+              type="button"
+              onClick={() => void loadProjects()}
+              className="text-slate-400 hover:text-white cursor-pointer"
             >
-              <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-200">
-                <div className="flex items-center gap-3">
-                  <SvgViewport
-                    svgContent={current.svgContent}
-                    backdrop="checkerboard"
-                    className="w-14 h-14 rounded border border-slate-200"
-                  />
-                  <div>
-                    <div className="text-xs font-mono text-slate-500">{current.id}</div>
-                    <div className="text-sm font-semibold text-slate-900">{current.category} · {current.style}</div>
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={handleRegenerate}
-                  disabled={regenerating}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:border-slate-400 rounded-md cursor-pointer disabled:opacity-50"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${regenerating ? 'animate-spin' : ''}`} />
-                  <span>{regenerating ? 'Regenerating...' : 'AI Regenerate'}</span>
-                </button>
+              <RefreshCw className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          {projects.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => selectProject(p)}
+              className={`w-full text-left p-3 rounded border text-xs cursor-pointer ${
+                p.id === selectedId
+                  ? 'border-[#3B82F6] bg-blue-950/30 text-slate-100'
+                  : 'border-slate-800 bg-[#0B0E14] text-slate-300 hover:border-slate-700'
+              }`}
+            >
+              <div className="font-mono text-[11px] text-slate-400">
+                {p.id} · {p.metadata.keywords.length} keywords
               </div>
-
-              <div>
-                <div className="flex justify-between text-xs mb-1">
-                  <label className="font-medium text-slate-700">Title (Adobe Stock)</label>
-                  <span className="font-mono text-slate-500 tabular-nums">{title.length}/200</span>
-                </div>
-                <input
-                  type="text"
-                  value={title}
-                  maxLength={200}
-                  onChange={(e) => setTitle(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-md focus:outline-none focus:border-[#2563EB]"
-                />
-              </div>
-
-              <div>
-                <div className="flex justify-between text-xs mb-1">
-                  <label className="font-medium text-slate-700">Description (Shutterstock)</label>
-                  <span className="font-mono text-slate-500 tabular-nums">{description.length}/200</span>
-                </div>
-                <textarea
-                  rows={2}
-                  value={description}
-                  maxLength={200}
-                  onChange={(e) => setDescription(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-md focus:outline-none focus:border-[#2563EB]"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Adobe Stock Category
-                  </label>
-                  <select
-                    value={adobeCat}
-                    onChange={(e) => setAdobeCat(e.target.value)}
-                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-md bg-white"
-                  >
-                    {adobeCategories.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Shutterstock Category
-                  </label>
-                  <select
-                    value={shutterCat}
-                    onChange={(e) => setShutterCat(e.target.value)}
-                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-md bg-white"
-                  >
-                    {shutterstockCategories.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Target Platform
-                  </label>
-                  <select
-                    value={platform}
-                    onChange={(e) => setPlatform(e.target.value as TargetPlatform)}
-                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-md bg-white"
-                  >
-                    <option value="both">Both Marketplaces</option>
-                    <option value="adobe_stock">Adobe Stock</option>
-                    <option value="shutterstock">Shutterstock</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Keywords Workbench */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between text-xs">
-                  <label className="font-medium text-slate-700">
-                    Unique Keywords (10–49 required, no duplicates)
-                  </label>
-                  <span
-                    className={`font-mono tabular-nums ${
-                      keywords.length < 10 ? 'text-amber-600' : 'text-emerald-700'
-                    }`}
-                  >
-                    {keywords.length} / 49
-                  </span>
-                </div>
-
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={newKeyword}
-                    onChange={(e) => setNewKeyword(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        handleAddKeyword();
-                      }
-                    }}
-                    placeholder="Add keyword(s), comma-separated..."
-                    className="flex-1 px-3 py-1.5 text-xs border border-slate-200 rounded-md focus:outline-none focus:border-[#2563EB]"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleAddKeyword}
-                    className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-md cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Add</span>
-                  </button>
-                </div>
-
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded-md flex flex-wrap gap-1.5">
-                  {keywords.map((kw) => (
-                    <span
-                      key={kw}
-                      className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-white border border-slate-200 rounded text-slate-700"
-                    >
-                      <span>{kw}</span>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveKeyword(kw)}
-                        aria-label={`Remove ${kw}`}
-                        className="text-slate-400 hover:text-red-600 cursor-pointer"
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              <div className="flex justify-end pt-2">
-                <button
-                  type="submit"
-                  disabled={saving}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-white bg-[#2563EB] hover:bg-blue-700 rounded-md cursor-pointer disabled:opacity-50"
-                >
-                  <Save className="w-3.5 h-3.5" />
-                  <span>{saving ? 'Saving...' : 'Save Changes'}</span>
-                </button>
-              </div>
-            </form>
-          )}
+              <div className="font-medium truncate mt-0.5">{p.metadata.title || p.name}</div>
+            </button>
+          ))}
         </div>
-      )}
+
+        {/* Right: Metadata Editor Form */}
+        {current ? (
+          <form
+            onSubmit={handleSave}
+            className="lg:col-span-8 bg-[#121722] border border-slate-800 rounded-lg p-6 space-y-4"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-800">
+              <div className="font-mono text-xs text-slate-400">
+                {current.id} · {current.category} · {current.animationType} · {current.durationSec}s @{' '}
+                {current.fps}fps
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleRegenerate()}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs text-slate-200 bg-[#0B0E14] border border-slate-700 hover:border-[#3B82F6] rounded cursor-pointer"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-[#3B82F6]" />
+                <span>Refresh Clean Metadata</span>
+              </button>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">
+                Commercial Stock Title ({title.length}/200)
+              </label>
+              <input
+                type="text"
+                maxLength={200}
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                className="w-full px-3 py-2 text-xs bg-[#0B0E14] text-slate-100 border border-slate-700 rounded-md"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">
+                Marketplace Description ({description.length}/200)
+              </label>
+              <textarea
+                rows={2}
+                maxLength={200}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                className="w-full px-3 py-2 text-xs bg-[#0B0E14] text-slate-100 border border-slate-700 rounded-md"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Adobe Stock Category
+                </label>
+                <select
+                  value={adobeCategory}
+                  onChange={(e) => setAdobeCategory(e.target.value)}
+                  className="w-full px-3 py-2 text-xs bg-[#0B0E14] text-slate-100 border border-slate-700 rounded-md"
+                >
+                  {adobeCategories.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Shutterstock Category
+                </label>
+                <select
+                  value={shutterstockCategory}
+                  onChange={(e) => setShutterstockCategory(e.target.value)}
+                  className="w-full px-3 py-2 text-xs bg-[#0B0E14] text-slate-100 border border-slate-700 rounded-md"
+                >
+                  {shutterstockCategories.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">
+                Comma-Separated Relevant Keywords (Max 49, No Spam/Trademarks)
+              </label>
+              <textarea
+                rows={4}
+                value={keywordsText}
+                onChange={(e) => setKeywordsText(e.target.value)}
+                className="w-full px-3 py-2 text-xs font-mono bg-[#0B0E14] text-slate-100 border border-slate-700 rounded-md"
+              />
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                type="submit"
+                disabled={saving}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-white bg-[#3B82F6] hover:bg-blue-500 rounded-md cursor-pointer disabled:opacity-50"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>{saving ? 'Saving...' : 'Save Metadata'}</span>
+              </button>
+            </div>
+          </form>
+        ) : (
+          <div className="lg:col-span-8 bg-[#121722] border border-slate-800 rounded-lg p-12 text-center text-xs text-slate-500">
+            Create an animation project first to edit stock metadata.
+          </div>
+        )}
+      </div>
     </div>
   );
 };

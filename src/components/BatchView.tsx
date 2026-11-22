@@ -1,577 +1,570 @@
 import React, { useEffect, useState } from 'react';
 import {
   Download,
+  ExternalLink,
   Layers,
   Pause,
   Play,
+  RefreshCw,
   RotateCcw,
   Square,
 } from 'lucide-react';
 import {
-  DESIGN_STYLES,
-  STOCK_CATEGORIES,
-  TARGET_PLATFORMS,
+  ANIMATION_CATEGORIES,
+  ANIMATION_TYPES_BY_CATEGORY,
+  FPS_OPTIONS,
+  RESOLUTIONS,
+  VISUAL_STYLES,
   api,
-  downloadExportBundle,
+  downloadAnimationZip,
 } from '../lib/api';
 import type {
-  BatchJob,
-  DesignStyle,
+  AnimationBatchJob,
+  AnimationCategory,
+  AnimationProject,
+  AnimationType,
+  BackgroundMode,
+  FpsOption,
   ProviderSlug,
   ProviderState,
-  StockAsset,
-  StockCategory,
-  TargetPlatform,
+  ResolutionPreset,
+  VisualStyle,
 } from '../types/stockforge';
 
 interface BatchViewProps {
   onNotify: (msg: string) => void;
-  onInspectAssetId: (assetId: string) => void;
-  onGoToProviders: () => void;
+  onOpenProjectById: (projectId: string) => void;
+  onOpenProject?: (project: AnimationProject) => void;
 }
 
-export const BatchView: React.FC<BatchViewProps> = ({
-  onNotify,
-  onInspectAssetId,
-  onGoToProviders,
-}) => {
-  const [batches, setBatches] = useState<BatchJob[]>([]);
-  const [selectedBatch, setSelectedBatch] = useState<BatchJob | null>(null);
+const QUANTITIES = [1, 5, 10, 25, 50, 100];
+
+export const BatchView: React.FC<BatchViewProps> = ({ onNotify, onOpenProjectById }) => {
+  const [batches, setBatches] = useState<AnimationBatchJob[]>([]);
+  const [selectedBatch, setSelectedBatch] = useState<AnimationBatchJob | null>(null);
   const [providers, setProviders] = useState<ProviderState[]>([]);
 
-  const [name, setName] = useState('');
-  const [basePrompt, setBasePrompt] = useState('');
-  const [category, setCategory] = useState<StockCategory>('Business');
-  const [style, setStyle] = useState<DesignStyle>('Flat Geometric');
-  const [targetPlatform, setTargetPlatform] = useState<TargetPlatform>('both');
-  const [requestedCount, setRequestedCount] = useState<number>(10);
-  const [concurrency, setConcurrency] = useState<number>(2);
-  const [providerSlug, setProviderSlug] = useState<ProviderSlug>('gemini');
-  const [model, setModel] = useState('');
+  const [name, setName] = useState('Commercial Motion Graphics Set');
+  const [basePrompt, setBasePrompt] = useState(
+    'Modern dynamic abstract shapes and glowing particles looping smoothly'
+  );
+  const [category, setCategory] = useState<AnimationCategory>('Motion Graphics');
+  const [animationType, setAnimationType] = useState<AnimationType | 'mixed'>('mixed');
+  const [visualStyle, setVisualStyle] = useState<VisualStyle>('Clean Vector Motion');
+  const [backgroundMode, setBackgroundMode] = useState<BackgroundMode>('solid');
+  const [resolution, setResolution] = useState<ResolutionPreset>('1920x1080');
+  const [durationSec, setDurationSec] = useState(2.5);
+  const [fps, setFps] = useState<FpsOption>(24);
+  const [requestedCount, setRequestedCount] = useState(5);
+  const [concurrency, setConcurrency] = useState(2);
+  const [engineSlug, setEngineSlug] = useState<'procedural' | ProviderSlug>('procedural');
   const [submitting, setSubmitting] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [exportingZip, setExportingZip] = useState(false);
-  const [isServerless, setIsServerless] = useState(false);
 
   const loadBatches = async () => {
     try {
-      const data = await api.getBatches();
-      if (typeof data?.isServerless === 'boolean') {
-        setIsServerless(data.isServerless);
-      }
-      const nextBatches = Array.isArray(data?.batches) ? data.batches : [];
-      setBatches(nextBatches);
+      const [bRes, pRes] = await Promise.all([api.listAnimationBatches(), api.getProviders()]);
+      const list = bRes.batches ?? [];
+      setBatches(list);
+      setProviders(pRes.providers ?? []);
       if (selectedBatch) {
-        const detail = await api.getBatch(selectedBatch.id);
-        if (detail?.batch) setSelectedBatch(detail.batch);
-      } else if (nextBatches.length > 0) {
-        const detail = await api.getBatch(nextBatches[0].id);
-        if (detail?.batch) setSelectedBatch(detail.batch);
+        const detail = await api.getAnimationBatch(selectedBatch.id);
+        setSelectedBatch(detail.batch);
+      } else if (list.length > 0) {
+        const detail = await api.getAnimationBatch(list[0].id);
+        setSelectedBatch(detail.batch);
       }
     } catch {
-      // ignore transient poll error
+      // ignore poll hiccup
     }
   };
 
   useEffect(() => {
-    void api
-      .getProviders()
-      .then((d) => {
-        const list = Array.isArray(d?.providers) ? d.providers : [];
-        setProviders(list);
-        const active = list.find((p) => p.isActive) ?? list[0];
-        if (active) {
-          setProviderSlug(active.slug);
-          setModel(active.selectedModel);
-        }
-      })
-      .catch(() => {
-        // ignore transient fetch error
-      });
     void loadBatches();
   }, []);
 
-  // Poll or step sequentially while any batch is running/queued
   useEffect(() => {
-    const activeBatch = batches.find((b) => b.status === 'running' || b.status === 'queued');
-    if (!activeBatch) return;
-
-    if (!isServerless) {
-      const timer = window.setInterval(() => {
-        void loadBatches();
-      }, 2500);
-      return () => window.clearInterval(timer);
+    const hasActive = batches.some((b) => b.status === 'running' || b.status === 'queued');
+    if (!hasActive && selectedBatch?.status !== 'running' && selectedBatch?.status !== 'queued') {
+      return;
     }
-
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await api.stepBatch(activeBatch.id);
-        if (!cancelled && res?.batch) {
-          setBatches((prev) =>
-            prev.map((b) => (b.id === res.batch.id ? { ...b, ...res.batch } : b))
-          );
-          if (selectedBatch?.id === res.batch.id) {
-            setSelectedBatch(res.batch);
-          }
-        }
-      } catch {
-        // ignore transient step error
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [batches, selectedBatch?.id, isServerless]);
-
-  const handleSelectBatch = async (id: string) => {
-    try {
-      const { batch } = await api.getBatch(id);
-      setSelectedBatch(batch);
-    } catch (err) {
-      onNotify(err instanceof Error ? err.message : 'Failed to load batch details');
-    }
-  };
+    const id = window.setInterval(() => {
+      void loadBatches();
+    }, 1500);
+    return () => window.clearInterval(id);
+  }, [batches, selectedBatch?.id, selectedBatch?.status]);
 
   const handleStartBatch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (basePrompt.trim().length < 3) {
-      setFormError('Enter a base prompt for the batch (at least 3 characters).');
+      onNotify('Enter a base prompt of at least 3 characters.');
       return;
     }
     setSubmitting(true);
-    setFormError(null);
     try {
-      const { batch } = await api.createBatch({
+      const prov = providers.find((p) => p.slug === engineSlug);
+      const res = await api.createAnimationBatch({
         name: name.trim() || `${category} Batch (${requestedCount})`,
         basePrompt: basePrompt.trim(),
         category,
-        style,
-        targetPlatform,
+        animationType,
+        visualStyle,
+        backgroundMode,
+        resolution,
+        durationSec,
+        fps,
+        providerSlug: engineSlug,
+        model: engineSlug === 'procedural' ? 'stockforge-procedural-v1' : prov?.selectedModel || '',
         requestedCount,
         concurrency,
-        providerSlug,
-        model,
+        exportFormats: [
+          'mp4_h264',
+          'mp4_preview',
+          'gif_preview',
+          'thumbnail_png',
+          'svg_animated',
+          'lottie_json',
+          'source_zip',
+          ...(backgroundMode === 'transparent'
+            ? (['mov_alpha', 'png_sequence'] as ('mov_alpha' | 'png_sequence')[])
+            : []),
+        ],
       });
-      setSelectedBatch(batch);
+      setSelectedBatch(res.batch);
       await loadBatches();
-      onNotify(`Started batch ${batch.id} (${requestedCount} items)`);
-      setName('');
+      onNotify(`Started batch ${res.batch.id} (${requestedCount} unique animations)`);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to start batch';
-      setFormError(msg);
-      onNotify(msg);
+      onNotify(err instanceof Error ? err.message : 'Batch creation failed');
     } finally {
       setSubmitting(false);
     }
   };
 
-  const handleBatchControl = async (
+  const handleSelectBatch = async (id: string) => {
+    try {
+      const res = await api.getAnimationBatch(id);
+      setSelectedBatch(res.batch);
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Failed to load batch');
+    }
+  };
+
+  const handleAction = async (
     action: 'pause' | 'resume' | 'retry' | 'cancel',
     batchId: string
   ) => {
     try {
       const res =
         action === 'pause'
-          ? await api.pauseBatch(batchId)
-          : action === 'cancel'
-          ? await api.cancelBatch(batchId)
-          : await api.resumeBatch(batchId, action === 'retry');
+          ? await api.pauseAnimationBatch(batchId)
+          : action === 'resume'
+          ? await api.resumeAnimationBatch(batchId, false)
+          : action === 'retry'
+          ? await api.resumeAnimationBatch(batchId, true)
+          : await api.cancelAnimationBatch(batchId);
       setSelectedBatch(res.batch);
       await loadBatches();
-      onNotify(`Batch ${batchId}: ${action}`);
     } catch (err) {
-      onNotify(err instanceof Error ? err.message : 'Action failed');
+      onNotify(err instanceof Error ? err.message : 'Batch control failed');
     }
   };
-
-  const handleExportBatchZip = async (batchId: string) => {
-    setExportingZip(true);
-    try {
-      await downloadExportBundle({
-        batchId,
-        formats: ['svg', 'eps', 'png', 'jpg'],
-        includeAdobeCsv: true,
-        includeShutterstockCsv: true,
-      });
-      onNotify(`Exported complete ZIP bundle for ${batchId}`);
-    } catch (err) {
-      onNotify(err instanceof Error ? err.message : 'Bundle export failed');
-    } finally {
-      setExportingZip(false);
-    }
-  };
-
-  const selectedProvider = providers.find((p) => p.slug === providerSlug);
-  const pct =
-    selectedBatch && selectedBatch.requestedCount > 0
-      ? Math.round(
-          ((selectedBatch.completedCount + selectedBatch.failedCount) /
-            selectedBatch.requestedCount) *
-            100
-        )
-      : 0;
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-slate-900 tracking-tight">
-          Batch Production Queue
-        </h1>
-        <p className="text-sm text-slate-600 mt-1">
-          Produce 10 to 100 distinct vector concepts with controlled concurrency, retry backoff, and duplicate geometry filtering.
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold text-slate-50 tracking-tight">
+            Batch Production Queue
+          </h1>
+          <p className="text-sm text-slate-400 mt-1">
+            Queue 1 to 100 distinct animations with automatic variation synthesis, FFmpeg encoding, and QA validation.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void loadBatches()}
+          className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-300 bg-[#121722] border border-slate-800 hover:border-slate-700 rounded-md cursor-pointer self-start"
+        >
+          <RefreshCw className="w-3.5 h-3.5" />
+          <span>Refresh Queue</span>
+        </button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left: New Batch Config + Batch History List */}
-        <div className="lg:col-span-5 space-y-6">
-          <form
-            onSubmit={handleStartBatch}
-            className="bg-white border border-slate-200 rounded-lg p-5 space-y-4"
-          >
-            <h2 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-              <Layers className="w-4 h-4 text-slate-500" />
-              <span>Launch New Production Batch</span>
-            </h2>
+        {/* Left: Batch Configurator */}
+        <form
+          onSubmit={handleStartBatch}
+          className="lg:col-span-5 bg-[#121722] border border-slate-800 rounded-lg p-5 space-y-4"
+        >
+          <h2 className="text-sm font-semibold text-slate-100">Queue New Animation Batch</h2>
 
+          <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1">Batch Title</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full px-3 py-2 text-xs bg-[#0B0E14] text-slate-100 border border-slate-700 rounded-md"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1">Base Prompt</label>
+            <textarea
+              rows={2}
+              value={basePrompt}
+              onChange={(e) => setBasePrompt(e.target.value)}
+              className="w-full px-3 py-2 text-xs bg-[#0B0E14] text-slate-100 border border-slate-700 rounded-md"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">Batch Name</label>
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="e.g., Q4 Fintech Isometric Pack"
-                className="w-full px-3 py-2 text-xs border border-slate-200 rounded-md focus:outline-none focus:border-[#2563EB]"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">
-                Base Concept Prompt
-              </label>
-              <textarea
-                rows={3}
-                value={basePrompt}
-                onChange={(e) => setBasePrompt(e.target.value)}
-                placeholder="Describe the core theme; the batch engine automatically crafts unique compositions for every item."
-                className="w-full px-3 py-2 text-xs border border-slate-200 rounded-md focus:outline-none focus:border-[#2563EB]"
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">Category</label>
-                <select
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value as StockCategory)}
-                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-md bg-white"
-                >
-                  {STOCK_CATEGORIES.map((c) => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">Style</label>
-                <select
-                  value={style}
-                  onChange={(e) => setStyle(e.target.value as DesignStyle)}
-                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-md bg-white"
-                >
-                  {DESIGN_STYLES.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">
-                Batch Quantity
-              </label>
-              <div className="grid grid-cols-4 gap-1 p-1 bg-slate-100 rounded-md">
-                {[10, 25, 50, 100].map((qty) => (
-                  <button
-                    key={qty}
-                    type="button"
-                    onClick={() => setRequestedCount(qty)}
-                    className={`py-1.5 text-xs font-mono rounded cursor-pointer ${
-                      requestedCount === qty
-                        ? 'bg-white text-slate-900 font-semibold shadow-xs'
-                        : 'text-slate-600'
-                    }`}
-                  >
-                    {qty}
-                  </button>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Category</label>
+              <select
+                value={category}
+                onChange={(e) => {
+                  setCategory(e.target.value as AnimationCategory);
+                  setAnimationType('mixed');
+                }}
+                className="w-full px-2.5 py-2 text-xs bg-[#0B0E14] text-slate-100 border border-slate-700 rounded-md"
+              >
+                {ANIMATION_CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
                 ))}
-              </div>
+              </select>
             </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">
-                  Concurrency Limit
-                </label>
-                <select
-                  value={concurrency}
-                  onChange={(e) => setConcurrency(Number(e.target.value))}
-                  className="w-full px-3 py-2 text-xs font-mono border border-slate-200 rounded-md bg-white"
-                >
-                  <option value={1}>1 worker (Strict Rate Limit)</option>
-                  <option value={2}>2 workers (Balanced)</option>
-                  <option value={3}>3 workers (Fast)</option>
-                  <option value={4}>4 workers (High Quota)</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">
-                  Target Platform
-                </label>
-                <select
-                  value={targetPlatform}
-                  onChange={(e) => setTargetPlatform(e.target.value as TargetPlatform)}
-                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-md bg-white"
-                >
-                  {TARGET_PLATFORMS.map((tp) => (
-                    <option key={tp.id} value={tp.id}>
-                      {tp.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Animation Type</label>
+              <select
+                value={animationType}
+                onChange={(e) => setAnimationType(e.target.value as AnimationType | 'mixed')}
+                className="w-full px-2.5 py-2 text-xs bg-[#0B0E14] text-slate-100 border border-slate-700 rounded-md"
+              >
+                <option value="mixed">Mixed (Unique Type per Item)</option>
+                {(ANIMATION_TYPES_BY_CATEGORY[category] ?? []).map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
             </div>
+          </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">Provider</label>
-                <select
-                  value={providerSlug}
-                  onChange={(e) => {
-                    const slug = e.target.value as ProviderSlug;
-                    setProviderSlug(slug);
-                    const p = providers.find((x) => x.slug === slug);
-                    if (p) setModel(p.selectedModel);
-                  }}
-                  className="w-full px-3 py-2 text-xs border border-slate-200 rounded-md bg-white"
-                >
-                  {providers.map((p) => (
-                    <option key={p.slug} value={p.slug}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">Model</label>
-                <select
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  className="w-full px-3 py-2 text-xs font-mono border border-slate-200 rounded-md bg-white"
-                >
-                  {(selectedProvider?.availableModels ?? []).map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-              </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Visual Style</label>
+              <select
+                value={visualStyle}
+                onChange={(e) => setVisualStyle(e.target.value as VisualStyle)}
+                className="w-full px-2.5 py-2 text-xs bg-[#0B0E14] text-slate-100 border border-slate-700 rounded-md"
+              >
+                {VISUAL_STYLES.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
             </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Background</label>
+              <select
+                value={backgroundMode}
+                onChange={(e) => setBackgroundMode(e.target.value as BackgroundMode)}
+                className="w-full px-2.5 py-2 text-xs bg-[#0B0E14] text-slate-100 border border-slate-700 rounded-md"
+              >
+                <option value="solid">Solid Backdrop</option>
+                <option value="green_screen">Green Screen (#00FF00)</option>
+                <option value="transparent">Transparent Alpha</option>
+              </select>
+            </div>
+          </div>
 
-            {formError && (
-              <div className="p-2.5 rounded-md bg-red-50 border border-red-200 text-xs text-red-800 space-y-1.5">
-                <div className="break-words">{formError}</div>
+          <div className="grid grid-cols-3 gap-2">
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Resolution</label>
+              <select
+                value={resolution}
+                onChange={(e) => setResolution(e.target.value as ResolutionPreset)}
+                className="w-full px-2 py-2 text-xs font-mono bg-[#0B0E14] text-slate-100 border border-slate-700 rounded-md"
+              >
+                {RESOLUTIONS.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.id}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">Duration (s)</label>
+              <input
+                type="number"
+                min={1.5}
+                max={15}
+                step={0.5}
+                value={durationSec}
+                onChange={(e) => setDurationSec(Number(e.target.value))}
+                className="w-full px-2 py-2 text-xs font-mono bg-[#0B0E14] text-slate-100 border border-slate-700 rounded-md"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">FPS</label>
+              <select
+                value={fps}
+                onChange={(e) => setFps(Number(e.target.value) as FpsOption)}
+                className="w-full px-2 py-2 text-xs font-mono bg-[#0B0E14] text-slate-100 border border-slate-700 rounded-md"
+              >
+                {FPS_OPTIONS.map((f) => (
+                  <option key={f} value={f}>
+                    {f} fps
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-slate-300 mb-1.5">
+              Batch Asset Count
+            </label>
+            <div className="grid grid-cols-6 gap-1.5">
+              {QUANTITIES.map((q) => (
                 <button
+                  key={q}
                   type="button"
-                  onClick={onGoToProviders}
-                  className="text-[11px] font-medium underline cursor-pointer"
-                >
-                  Open AI Providers →
-                </button>
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={submitting}
-              className="w-full py-2.5 text-xs font-medium text-white bg-[#2563EB] hover:bg-blue-700 disabled:opacity-50 rounded-md cursor-pointer"
-            >
-              {submitting ? 'Starting Queue...' : `Start ${requestedCount}-Asset Batch`}
-            </button>
-          </form>
-
-          {/* Batch list */}
-          <div className="bg-white border border-slate-200 rounded-lg divide-y divide-slate-100">
-            <div className="px-4 py-3 text-xs font-semibold text-slate-900">
-              All Production Batches ({(batches ?? []).length})
-            </div>
-            {(batches ?? []).length === 0 ? (
-              <div className="p-4 text-xs text-slate-500">No batches created yet.</div>
-            ) : (
-              (batches ?? []).map((b) => (
-                <button
-                  key={b.id}
-                  type="button"
-                  onClick={() => handleSelectBatch(b.id)}
-                  className={`w-full text-left px-4 py-3 hover:bg-slate-50 cursor-pointer flex items-center justify-between gap-2 ${
-                    selectedBatch?.id === b.id ? 'bg-blue-50/40' : ''
+                  onClick={() => setRequestedCount(q)}
+                  className={`py-1.5 text-xs font-mono rounded border cursor-pointer ${
+                    requestedCount === q
+                      ? 'bg-[#3B82F6] border-[#3B82F6] text-white'
+                      : 'bg-[#0B0E14] border-slate-700 text-slate-300 hover:border-slate-500'
                   }`}
                 >
-                  <div className="min-w-0">
-                    <div className="text-xs font-semibold text-slate-900 truncate">{b.name}</div>
-                    <div className="text-[11px] font-mono text-slate-500 mt-0.5 tabular-nums">
-                      {b.completedCount}/{b.requestedCount} completed · {b.status}
-                    </div>
-                  </div>
-                  <span className="text-[11px] font-mono text-slate-400 shrink-0">
-                    {b.id.slice(-4)}
-                  </span>
+                  {q}
                 </button>
-              ))
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">
+                Synthesis Engine
+              </label>
+              <select
+                value={engineSlug}
+                onChange={(e) => setEngineSlug(e.target.value as 'procedural' | ProviderSlug)}
+                className="w-full px-2.5 py-2 text-xs bg-[#0B0E14] text-slate-100 border border-slate-700 rounded-md"
+              >
+                <option value="procedural">Procedural Engine</option>
+                {providers.map((p) => (
+                  <option key={p.slug} value={p.slug}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">
+                Concurrency (1–4)
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={4}
+                value={concurrency}
+                onChange={(e) => setConcurrency(Number(e.target.value))}
+                className="w-full px-3 py-2 text-xs font-mono bg-[#0B0E14] text-slate-100 border border-slate-700 rounded-md"
+              />
+            </div>
+          </div>
+
+          <button
+            type="submit"
+            disabled={submitting}
+            className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-medium text-white bg-[#3B82F6] hover:bg-blue-500 rounded-md cursor-pointer disabled:opacity-50"
+          >
+            <Layers className="w-4 h-4" />
+            <span>{submitting ? 'Queuing Batch...' : `Start ${requestedCount}-Asset Animation Batch`}</span>
+          </button>
+        </form>
+
+        {/* Right: Active Queue & Job Details */}
+        <div className="lg:col-span-7 space-y-4">
+          <div className="bg-[#121722] border border-slate-800 rounded-lg p-5 space-y-3">
+            <h2 className="text-sm font-semibold text-slate-100">Persistent Batch Jobs</h2>
+            {batches.length === 0 ? (
+              <div className="text-xs text-slate-500 py-4">No animation batches created yet.</div>
+            ) : (
+              <div className="divide-y divide-slate-800 max-h-56 overflow-y-auto">
+                {batches.map((b) => {
+                  const pct = Math.round(
+                    ((b.completedCount + b.failedCount) / Math.max(1, b.requestedCount)) * 100
+                  );
+                  return (
+                    <div
+                      key={b.id}
+                      onClick={() => void handleSelectBatch(b.id)}
+                      className={`py-3 px-2 rounded cursor-pointer flex items-center justify-between gap-4 ${
+                        selectedBatch?.id === b.id ? 'bg-[#0B0E14]' : 'hover:bg-[#0B0E14]/60'
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold text-slate-100 truncate">
+                          {b.name}
+                        </div>
+                        <div className="text-[11px] font-mono text-slate-400 mt-0.5 tabular-nums">
+                          {b.id} · {b.completedCount}/{b.requestedCount} done
+                          {b.failedCount > 0 ? ` · ${b.failedCount} failed` : ''} · {pct}%
+                        </div>
+                      </div>
+                      <span
+                        className={`text-xs font-mono shrink-0 ${
+                          b.status === 'completed'
+                            ? 'text-emerald-400'
+                            : b.status === 'failed'
+                            ? 'text-red-400'
+                            : b.status === 'running'
+                            ? 'text-[#3B82F6]'
+                            : 'text-amber-400'
+                        }`}
+                      >
+                        {b.status}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </div>
-        </div>
 
-        {/* Right: Active Batch Queue Monitor */}
-        <div className="lg:col-span-7">
-          {!selectedBatch ? (
-            <div className="bg-white border border-dashed border-slate-300 rounded-lg p-12 text-center text-xs text-slate-500">
-              Select or launch a batch job to inspect live queue items, retries, and export bundles.
-            </div>
-          ) : (
-            <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-              <div className="p-5 border-b border-slate-200 space-y-4">
-                <div className="flex flex-wrap items-start justify-between gap-4">
-                  <div>
-                    <div className="text-xs font-mono text-slate-500">
-                      {selectedBatch.id} · {selectedBatch.providerSlug} ({selectedBatch.model})
-                    </div>
-                    <h2 className="text-lg font-semibold text-slate-900 mt-0.5">
-                      {selectedBatch.name}
-                    </h2>
+          {selectedBatch && (
+            <div className="bg-[#121722] border border-slate-800 rounded-lg p-5 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-mono text-slate-400">
+                    {selectedBatch.id} · {selectedBatch.resolution} · {selectedBatch.fps}fps ·{' '}
+                    {selectedBatch.durationSec}s
                   </div>
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    {(selectedBatch.status === 'running' || selectedBatch.status === 'queued') && (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => handleBatchControl('pause', selectedBatch.id)}
-                          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md cursor-pointer"
-                        >
-                          <Pause className="w-3.5 h-3.5" />
-                          <span>Pause</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleBatchControl('cancel', selectedBatch.id)}
-                          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded-md cursor-pointer"
-                        >
-                          <Square className="w-3.5 h-3.5" />
-                          <span>Cancel</span>
-                        </button>
-                      </>
-                    )}
-                    {selectedBatch.status === 'paused' && (
-                      <button
-                        type="button"
-                        onClick={() => handleBatchControl('resume', selectedBatch.id)}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-white bg-[#2563EB] rounded-md cursor-pointer"
-                      >
-                        <Play className="w-3.5 h-3.5" />
-                        <span>Resume</span>
-                      </button>
-                    )}
-                    {selectedBatch.failedCount > 0 && selectedBatch.status !== 'running' && (
-                      <button
-                        type="button"
-                        onClick={() => handleBatchControl('retry', selectedBatch.id)}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md cursor-pointer"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5" />
-                        <span>Retry Failed ({selectedBatch.failedCount})</span>
-                      </button>
-                    )}
-                    {selectedBatch.completedCount > 0 && (
-                      <button
-                        type="button"
-                        disabled={exportingZip}
-                        onClick={() => handleExportBatchZip(selectedBatch.id)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-slate-900 hover:bg-[#2563EB] rounded-md cursor-pointer disabled:opacity-50"
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                        <span>{exportingZip ? 'Packaging...' : 'Export Batch ZIP'}</span>
-                      </button>
-                    )}
-                  </div>
+                  <h3 className="text-base font-semibold text-slate-100 mt-0.5">
+                    {selectedBatch.name}
+                  </h3>
                 </div>
 
-                {/* Progress Bar */}
-                <div>
-                  <div className="flex items-center justify-between text-xs mb-1.5 font-mono tabular-nums">
-                    <span className="capitalize text-slate-700">Status: {selectedBatch.status}</span>
-                    <span className="text-slate-600">
-                      {selectedBatch.completedCount} completed · {selectedBatch.failedCount} failed ·{' '}
-                      {selectedBatch.duplicateSkippedCount} duplicates avoided ({pct}%)
-                    </span>
-                  </div>
-                  <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-[#2563EB] transition-all duration-300"
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {(selectedBatch.status === 'running' || selectedBatch.status === 'queued') && (
+                    <button
+                      type="button"
+                      onClick={() => void handleAction('pause', selectedBatch.id)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs bg-[#0B0E14] border border-slate-700 text-slate-200 rounded cursor-pointer"
+                    >
+                      <Pause className="w-3.5 h-3.5" />
+                      <span>Pause</span>
+                    </button>
+                  )}
+                  {selectedBatch.status === 'paused' && (
+                    <button
+                      type="button"
+                      onClick={() => void handleAction('resume', selectedBatch.id)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs bg-[#3B82F6] text-white rounded cursor-pointer"
+                    >
+                      <Play className="w-3.5 h-3.5" />
+                      <span>Resume</span>
+                    </button>
+                  )}
+                  {selectedBatch.failedCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => void handleAction('retry', selectedBatch.id)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs bg-amber-600 text-white rounded cursor-pointer"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Retry Failed</span>
+                    </button>
+                  )}
+                  {(selectedBatch.status === 'running' ||
+                    selectedBatch.status === 'paused' ||
+                    selectedBatch.status === 'queued') && (
+                    <button
+                      type="button"
+                      onClick={() => void handleAction('cancel', selectedBatch.id)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs bg-red-950/50 border border-red-800 text-red-300 rounded cursor-pointer"
+                    >
+                      <Square className="w-3 h-3" />
+                      <span>Cancel</span>
+                    </button>
+                  )}
+                  {selectedBatch.completedCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void downloadAnimationZip({
+                          batchId: selectedBatch.id,
+                          formats: ['mp4_h264', 'svg_animated', 'lottie_json', 'source_zip'],
+                          includeAdobeCsv: true,
+                          includeShutterstockCsv: true,
+                        }).catch((err) =>
+                          onNotify(err instanceof Error ? err.message : 'Batch ZIP failed')
+                        )
+                      }
+                      className="inline-flex items-center gap-1 px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white rounded cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Download Batch ZIP</span>
+                    </button>
+                  )}
                 </div>
               </div>
 
-              {/* Item-by-Item Status Table */}
-              <div className="max-h-[540px] overflow-y-auto divide-y divide-slate-100">
+              <div className="w-full h-2 bg-[#0B0E14] rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-[#3B82F6] transition-all"
+                  style={{
+                    width: `${Math.round(
+                      ((selectedBatch.completedCount + selectedBatch.failedCount) /
+                        Math.max(1, selectedBatch.requestedCount)) *
+                        100
+                    )}%`,
+                  }}
+                />
+              </div>
+
+              <div className="max-h-72 overflow-y-auto divide-y divide-slate-800 border-t border-slate-800">
                 {(selectedBatch.items ?? []).map((item) => (
                   <div
                     key={item.id}
-                    className="px-5 py-3 flex items-center justify-between gap-4 text-xs hover:bg-slate-50/70"
+                    className="py-2.5 flex items-center justify-between gap-3 text-xs"
                   >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-slate-400 tabular-nums">
-                          #{String(item.seqIndex).padStart(3, '0')}
-                        </span>
-                        <span className="text-slate-800 truncate">{item.variationPrompt}</span>
+                    <div className="min-w-0">
+                      <div className="font-mono text-[11px] text-slate-300 truncate">
+                        #{item.seqIndex} · {item.animationType} · {item.variationPrompt}
                       </div>
                       {item.errorMessage && (
-                        <div className="text-[11px] text-red-600 font-mono mt-0.5 break-words">
+                        <div className="text-[11px] text-red-400 font-mono truncate mt-0.5">
                           {item.errorMessage}
                         </div>
                       )}
                     </div>
-
-                    <div className="flex items-center gap-3 shrink-0 font-mono tabular-nums">
-                      <span className="text-[11px] text-slate-400">try {item.attempts}</span>
+                    <div className="flex items-center gap-2 shrink-0">
                       <span
-                        className={`text-[11px] font-medium ${
+                        className={`font-mono text-[11px] ${
                           item.status === 'completed'
-                            ? 'text-emerald-700'
+                            ? 'text-emerald-400'
                             : item.status === 'failed'
-                            ? 'text-red-600'
-                            : item.status === 'generating' || item.status === 'retrying'
-                            ? 'text-[#2563EB]'
-                            : 'text-slate-500'
+                            ? 'text-red-400'
+                            : 'text-slate-400'
                         }`}
                       >
                         {item.status}
                       </span>
-                      {item.assetId && (
+                      {item.projectId && (
                         <button
                           type="button"
-                          onClick={() => onInspectAssetId(item.assetId!)}
-                          className="text-xs font-sans font-medium text-[#2563EB] hover:underline cursor-pointer"
+                          onClick={() => onOpenProjectById(item.projectId!)}
+                          className="inline-flex items-center gap-1 text-[#3B82F6] hover:underline cursor-pointer"
                         >
-                          Inspect
+                          <span>Edit</span>
+                          <ExternalLink className="w-3 h-3" />
                         </button>
                       )}
                     </div>

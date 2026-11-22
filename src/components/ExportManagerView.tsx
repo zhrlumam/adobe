@@ -1,95 +1,91 @@
 import React, { useEffect, useState } from 'react';
-import { Download, FileArchive } from 'lucide-react';
+import { Archive, CheckSquare, Download, FileSpreadsheet, RefreshCw } from 'lucide-react';
 import {
+  EXPORT_FORMAT_LABELS,
   api,
-  downloadExportBundle,
-  downloadMetadataCsv,
+  downloadAnimationCsv,
+  downloadAnimationFormat,
+  downloadAnimationZip,
+  formatBytes,
 } from '../lib/api';
-import type { BatchJob, StockAsset } from '../types/stockforge';
+import type { AnimationExportFormat, AnimationProject } from '../types/stockforge';
 
 interface ExportManagerViewProps {
   onNotify: (msg: string) => void;
 }
 
+const PACKAGE_FORMATS: AnimationExportFormat[] = [
+  'mp4_h264',
+  'mov_prores',
+  'mov_alpha',
+  'png_sequence',
+  'gif_preview',
+  'thumbnail_png',
+  'svg_animated',
+  'lottie_json',
+  'source_zip',
+];
+
 export const ExportManagerView: React.FC<ExportManagerViewProps> = ({ onNotify }) => {
-  const [assets, setAssets] = useState<StockAsset[]>([]);
-  const [batches, setBatches] = useState<BatchJob[]>([]);
-  const [scope, setScope] = useState<'all' | 'ready' | 'batch'>('all');
-  const [selectedBatchId, setSelectedBatchId] = useState('');
-
-  const [formats, setFormats] = useState<{
-    svg: boolean;
-    eps: boolean;
-    png: boolean;
-    jpg: boolean;
-  }>({
-    svg: true,
-    eps: true,
-    png: true,
-    jpg: true,
-  });
-
+  const [projects, setProjects] = useState<AnimationProject[]>([]);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [formats, setFormats] = useState<AnimationExportFormat[]>([
+    'mp4_h264',
+    'svg_animated',
+    'lottie_json',
+    'source_zip',
+  ]);
   const [includeAdobeCsv, setIncludeAdobeCsv] = useState(true);
   const [includeShutterstockCsv, setIncludeShutterstockCsv] = useState(true);
-  const [rasterSize, setRasterSize] = useState(4000);
-  const [jpgQuality, setJpgQuality] = useState(95);
   const [exporting, setExporting] = useState(false);
 
+  const loadCompleted = async () => {
+    try {
+      const res = await api.listAnimations({ status: 'completed' });
+      const list = res.projects ?? [];
+      setProjects(list);
+      setSelectedIds(list.map((p) => p.id));
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Failed to load exportable projects');
+    }
+  };
+
   useEffect(() => {
-    void api
-      .getAssets()
-      .then((d) => setAssets(Array.isArray(d?.assets) ? d.assets : []))
-      .catch(() => {});
-    void api
-      .getBatches()
-      .then((d) => {
-        const list = Array.isArray(d?.batches) ? d.batches : [];
-        setBatches(list);
-        if (list[0]) setSelectedBatchId(list[0].id);
-      })
-      .catch(() => {});
-    void api
-      .getSettings()
-      .then((d) => {
-        if (d?.settings) {
-          setRasterSize(d.settings.exportRasterSize);
-          setJpgQuality(d.settings.exportJpgQuality);
-        }
-      })
-      .catch(() => {});
+    void loadCompleted();
   }, []);
 
-  const targetAssets = assets.filter((a) => {
-    if (scope === 'ready') return a.validation.commercialReady;
-    if (scope === 'batch') return a.batchId === selectedBatchId;
-    return true;
-  });
+  const toggleProject = (id: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
 
-  const activeFormats = (['svg', 'eps', 'png', 'jpg'] as const).filter((f) => formats[f]);
+  const toggleFormat = (fmt: AnimationExportFormat) => {
+    setFormats((prev) =>
+      prev.includes(fmt) ? prev.filter((f) => f !== fmt) : [...prev, fmt]
+    );
+  };
 
-  const handleExportZip = async () => {
-    if (targetAssets.length === 0) {
-      onNotify('No assets match the selected export scope.');
+  const handleDownloadZip = async () => {
+    if (selectedIds.length === 0) {
+      onNotify('Select at least one QA-passed project to export.');
       return;
     }
-    if (activeFormats.length === 0) {
-      onNotify('Select at least one output file format.');
+    if (formats.length === 0) {
+      onNotify('Select at least one output format.');
       return;
     }
     setExporting(true);
     try {
-      await downloadExportBundle({
-        assetIds: scope === 'batch' ? undefined : targetAssets.map((a) => a.id),
-        batchId: scope === 'batch' ? selectedBatchId : undefined,
-        formats: activeFormats,
+      await downloadAnimationZip({
+        projectIds: selectedIds,
+        formats,
         includeAdobeCsv,
         includeShutterstockCsv,
-        rasterSize,
-        jpgQuality,
       });
-      onNotify(`Exported ${targetAssets.length} asset(s) in ${activeFormats.join(', ').toUpperCase()}`);
+      onNotify(`Downloaded commercial ZIP bundle for ${selectedIds.length} animation(s)`);
     } catch (err) {
-      onNotify(err instanceof Error ? err.message : 'Export bundle failed');
+      onNotify(err instanceof Error ? err.message : 'ZIP export failed');
     } finally {
       setExporting(false);
     }
@@ -97,221 +93,193 @@ export const ExportManagerView: React.FC<ExportManagerViewProps> = ({ onNotify }
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-slate-900 tracking-tight">Export Manager</h1>
-        <p className="text-sm text-slate-600 mt-1">
-          Compile true PostScript EPS vectors, clean SVG files, high-resolution PNG/JPG renders, and agency submission CSVs.
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold text-slate-50 tracking-tight">Export Center</h1>
+          <p className="text-sm text-slate-400 mt-1">
+            Download verified MP4 H.264, ProRes 422/4444 Alpha MOVs, PNG RGBA sequences, GIF/MP4 previews, Lottie JSON, SVG sources, and marketplace CSVs.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => void loadCompleted()}
+          className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-300 bg-[#121722] border border-slate-800 hover:border-slate-700 rounded-md cursor-pointer self-start"
+        >
+          <RefreshCw className="w-3.5 h-3.5" />
+          <span>Refresh</span>
+        </button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="lg:col-span-7 bg-white border border-slate-200 rounded-lg p-6 space-y-5">
+        {/* Left: Format & Package Configurator */}
+        <div className="lg:col-span-5 bg-[#121722] border border-slate-800 rounded-lg p-5 space-y-5">
           <div>
-            <label className="block text-xs font-semibold text-slate-900 mb-2">
-              1. Select Asset Scope
-            </label>
-            <div className="grid grid-cols-3 gap-2">
-              {[
-                { id: 'all', label: `All Assets (${assets.length})` },
-                {
-                  id: 'ready',
-                  label: `Validated Only (${assets.filter((a) => a.validation.commercialReady).length})`,
-                },
-                { id: 'batch', label: 'By Batch Job' },
-              ].map((opt) => (
-                <button
-                  key={opt.id}
-                  type="button"
-                  onClick={() => setScope(opt.id as 'all' | 'ready' | 'batch')}
-                  className={`px-3 py-2 text-xs font-medium rounded-md border cursor-pointer ${
-                    scope === opt.id
-                      ? 'bg-slate-900 text-white border-slate-900'
-                      : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-
-            {scope === 'batch' && (
-              <select
-                value={selectedBatchId}
-                onChange={(e) => setSelectedBatchId(e.target.value)}
-                className="mt-3 w-full px-3 py-2 text-xs border border-slate-200 rounded-md bg-white"
-              >
-                {batches.length === 0 ? (
-                  <option value="">No batches available</option>
-                ) : (
-                  batches.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.name} ({b.completedCount} completed)
-                    </option>
-                  ))
-                )}
-              </select>
-            )}
-          </div>
-
-          <div className="pt-4 border-t border-slate-200">
-            <label className="block text-xs font-semibold text-slate-900 mb-2">
-              2. Deliverable Formats
-            </label>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {(
-                [
-                  { id: 'svg', label: 'SVG (Editable XML)' },
-                  { id: 'eps', label: 'EPS (Vector PS3)' },
-                  { id: 'png', label: 'PNG (Transparent)' },
-                  { id: 'jpg', label: 'JPG (300 DPI White)' },
-                ] as const
-              ).map((fmt) => (
-                <label
-                  key={fmt.id}
-                  className={`flex items-center gap-2 p-2.5 rounded-md border text-xs cursor-pointer ${
-                    formats[fmt.id]
-                      ? 'border-[#2563EB] bg-blue-50/40 text-slate-900 font-medium'
-                      : 'border-slate-200 text-slate-600'
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={formats[fmt.id]}
-                    onChange={(e) =>
-                      setFormats((prev) => ({ ...prev, [fmt.id]: e.target.checked }))
-                    }
-                  />
-                  <span>{fmt.label}</span>
-                </label>
-              ))}
+            <h2 className="text-sm font-semibold text-slate-100 mb-3">
+              1. Select Deliverable Formats
+            </h2>
+            <div className="space-y-2">
+              {PACKAGE_FORMATS.map((fmt) => {
+                const meta = EXPORT_FORMAT_LABELS[fmt];
+                return (
+                  <label
+                    key={fmt}
+                    className="flex items-start justify-between gap-3 p-2.5 rounded bg-[#0B0E14] border border-slate-800 cursor-pointer"
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <input
+                        type="checkbox"
+                        checked={formats.includes(fmt)}
+                        onChange={() => toggleFormat(fmt)}
+                        className="mt-0.5"
+                      />
+                      <div>
+                        <div className="text-xs font-medium text-slate-100">{meta.label}</div>
+                        <div className="text-[11px] text-slate-400">{meta.note}</div>
+                      </div>
+                    </div>
+                    <span className="font-mono text-[11px] text-slate-500">{meta.ext}</span>
+                  </label>
+                );
+              })}
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4 border-t border-slate-200">
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">
-                PNG / JPG Render Resolution (px)
-              </label>
-              <select
-                value={rasterSize}
-                onChange={(e) => setRasterSize(Number(e.target.value))}
-                className="w-full px-3 py-2 text-xs font-mono border border-slate-200 rounded-md bg-white"
-              >
-                <option value={2000}>2000 × 2000 px (4 MP)</option>
-                <option value={4000}>4000 × 4000 px (16 MP — Stock Optimal)</option>
-                <option value={5000}>5000 × 5000 px (25 MP)</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">
-                JPG Compression Quality
-              </label>
+          <div className="pt-3 border-t border-slate-800 space-y-2 text-xs text-slate-300">
+            <div className="font-semibold text-slate-100">2. Stock Metadata CSVs</div>
+            <label className="flex items-center gap-2 cursor-pointer">
               <input
-                type="number"
-                min={60}
-                max={100}
-                value={jpgQuality}
-                onChange={(e) => setJpgQuality(Number(e.target.value))}
-                className="w-full px-3 py-2 text-xs font-mono border border-slate-200 rounded-md"
+                type="checkbox"
+                checked={includeAdobeCsv}
+                onChange={(e) => setIncludeAdobeCsv(e.target.checked)}
               />
-            </div>
+              <span>Include Adobe Stock contributor CSV</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeShutterstockCsv}
+                onChange={(e) => setIncludeShutterstockCsv(e.target.checked)}
+              />
+              <span>Include Shutterstock footage CSV</span>
+            </label>
           </div>
 
-          <div className="pt-4 border-t border-slate-200 space-y-2">
-            <label className="block text-xs font-semibold text-slate-900">
-              3. Agency Metadata CSV Files
-            </label>
-            <div className="flex flex-wrap gap-4 text-xs text-slate-700">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={includeAdobeCsv}
-                  onChange={(e) => setIncludeAdobeCsv(e.target.checked)}
-                />
-                <span>Include Adobe Stock CSV (Filename, Title, Keywords, Category)</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={includeShutterstockCsv}
-                  onChange={(e) => setIncludeShutterstockCsv(e.target.checked)}
-                />
-                <span>Include Shutterstock CSV (Description, Categories, Illustration=yes)</span>
-              </label>
-            </div>
+          <button
+            type="button"
+            disabled={exporting || selectedIds.length === 0}
+            onClick={() => void handleDownloadZip()}
+            className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-medium text-white bg-[#3B82F6] hover:bg-blue-500 rounded-md cursor-pointer disabled:opacity-50"
+          >
+            <Archive className="w-4 h-4" />
+            <span>
+              {exporting
+                ? 'Rendering & Compressing Package...'
+                : `Download Complete ZIP (${selectedIds.length} asset${selectedIds.length === 1 ? '' : 's'})`}
+            </span>
+          </button>
+
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() =>
+                void downloadAnimationCsv({
+                  projectIds: selectedIds,
+                  platform: 'adobe_stock',
+                  fileExtension: 'mp4',
+                })
+              }
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs bg-[#0B0E14] border border-slate-700 hover:border-[#3B82F6] text-slate-200 rounded cursor-pointer"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5" />
+              <span>Adobe CSV</span>
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                void downloadAnimationCsv({
+                  projectIds: selectedIds,
+                  platform: 'shutterstock',
+                  fileExtension: 'mp4',
+                })
+              }
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs bg-[#0B0E14] border border-slate-700 hover:border-[#3B82F6] text-slate-200 rounded cursor-pointer"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5" />
+              <span>Shutterstock CSV</span>
+            </button>
           </div>
         </div>
 
-        {/* Right: Summary & Actions */}
-        <div className="lg:col-span-5 space-y-4">
-          <div className="bg-white border border-slate-200 rounded-lg p-6 space-y-4">
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-              <FileArchive className="w-4 h-4 text-[#2563EB]" />
-              <span>Export Package Summary</span>
-            </div>
-
-            <div className="space-y-2 text-xs border-t border-b border-slate-100 py-3 font-mono tabular-nums">
-              <div className="flex justify-between">
-                <span className="text-slate-500">Assets in package:</span>
-                <span className="font-semibold text-slate-900">{targetAssets.length}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Vector formats:</span>
-                <span className="text-slate-900">
-                  {activeFormats.filter((f) => f === 'svg' || f === 'eps').join(', ').toUpperCase() ||
-                    'None'}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Raster size:</span>
-                <span className="text-slate-900">
-                  {rasterSize}×{rasterSize}px
-                </span>
-              </div>
-            </div>
-
+        {/* Right: QA-Passed Projects List & Individual Format Downloads */}
+        <div className="lg:col-span-7 bg-[#121722] border border-slate-800 rounded-lg p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-slate-100">
+              QA-Verified Productions ({projects.length})
+            </h2>
             <button
               type="button"
-              disabled={exporting || targetAssets.length === 0}
-              onClick={handleExportZip}
-              className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium text-white bg-[#2563EB] hover:bg-blue-700 disabled:opacity-50 rounded-md cursor-pointer"
+              onClick={() =>
+                setSelectedIds(
+                  selectedIds.length === projects.length ? [] : projects.map((p) => p.id)
+                )
+              }
+              className="inline-flex items-center gap-1 text-xs text-[#3B82F6] hover:underline cursor-pointer"
             >
-              <Download className="w-4 h-4" />
-              <span>{exporting ? 'Compiling Vectors & ZIP...' : 'Download Production ZIP'}</span>
+              <CheckSquare className="w-3.5 h-3.5" />
+              <span>{selectedIds.length === projects.length ? 'Deselect All' : 'Select All'}</span>
             </button>
-
-            <div className="grid grid-cols-2 gap-2 pt-2">
-              <button
-                type="button"
-                disabled={targetAssets.length === 0}
-                onClick={() =>
-                  downloadMetadataCsv({
-                    assetIds: scope === 'batch' ? undefined : targetAssets.map((a) => a.id),
-                    batchId: scope === 'batch' ? selectedBatchId : undefined,
-                    platform: 'adobe_stock',
-                  })
-                }
-                className="px-3 py-2 text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-md cursor-pointer disabled:opacity-40"
-              >
-                Adobe CSV Only
-              </button>
-              <button
-                type="button"
-                disabled={targetAssets.length === 0}
-                onClick={() =>
-                  downloadMetadataCsv({
-                    assetIds: scope === 'batch' ? undefined : targetAssets.map((a) => a.id),
-                    batchId: scope === 'batch' ? selectedBatchId : undefined,
-                    platform: 'shutterstock',
-                  })
-                }
-                className="px-3 py-2 text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-md cursor-pointer disabled:opacity-40"
-              >
-                Shutterstock CSV Only
-              </button>
-            </div>
           </div>
+
+          {projects.length === 0 ? (
+            <div className="py-10 text-center text-xs text-slate-500">
+              No QA-passed animation productions available yet.
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-800">
+              {projects.map((p) => (
+                <div key={p.id} className="py-3 space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <label className="flex items-center gap-2.5 cursor-pointer min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.includes(p.id)}
+                        onChange={() => toggleProject(p.id)}
+                      />
+                      <div className="min-w-0">
+                        <div className="text-xs font-medium text-slate-100 truncate">
+                          {p.name}
+                        </div>
+                        <div className="text-[11px] font-mono text-slate-400">
+                          {p.id} · {p.resolution} · {p.fps}fps · {p.backgroundMode} ·{' '}
+                          {p.reviewStatus}
+                        </div>
+                      </div>
+                    </label>
+                  </div>
+
+                  <div className="flex flex-wrap gap-1.5 pl-6">
+                    {p.outputFiles.map((file) => (
+                      <button
+                        key={file.format}
+                        type="button"
+                        onClick={() =>
+                          void downloadAnimationFormat(p.id, file.format).catch((err) =>
+                            onNotify(err instanceof Error ? err.message : 'Download failed')
+                          )
+                        }
+                        className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-mono bg-[#0B0E14] border border-slate-700 hover:border-[#3B82F6] text-slate-300 rounded cursor-pointer"
+                      >
+                        <Download className="w-3 h-3 text-[#3B82F6]" />
+                        <span>{EXPORT_FORMAT_LABELS[file.format]?.label || file.format}</span>
+                        <span className="text-slate-500">({formatBytes(file.sizeBytes)})</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

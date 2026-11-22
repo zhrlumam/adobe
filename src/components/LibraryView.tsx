@@ -1,46 +1,53 @@
 import React, { useEffect, useState } from 'react';
-import { CheckSquare, Download, Search, Square, Trash2, X } from 'lucide-react';
 import {
-  DESIGN_STYLES,
-  STOCK_CATEGORIES,
+  Copy,
+  Download,
+  Edit3,
+  FolderOpen,
+  RefreshCw,
+  Search,
+  Sliders,
+  Trash2,
+} from 'lucide-react';
+import {
+  ANIMATION_CATEGORIES,
   api,
-  downloadAssetFormat,
-  downloadExportBundle,
-  downloadMetadataCsv,
+  downloadAnimationFormat,
+  downloadAnimationZip,
+  outputFileUrl,
 } from '../lib/api';
-import type { StockAsset } from '../types/stockforge';
-import { SvgViewport } from './SvgViewport';
+import type { AnimationProject } from '../types/stockforge';
 
 interface LibraryViewProps {
-  onInspectAsset: (asset: StockAsset) => void;
+  onOpenEditor: (project: AnimationProject) => void;
   onNotify: (msg: string) => void;
-  refreshTick: number;
+  refreshTick?: number;
 }
 
 export const LibraryView: React.FC<LibraryViewProps> = ({
-  onInspectAsset,
+  onOpenEditor,
   onNotify,
-  refreshTick,
+  refreshTick = 0,
 }) => {
-  const [assets, setAssets] = useState<StockAsset[]>([]);
+  const [projects, setProjects] = useState<AnimationProject[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
-  const [styleFilter, setStyleFilter] = useState('all');
+  const [bgFilter, setBgFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [busyExport, setBusyExport] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
 
-  const loadAssets = async () => {
+  const loadProjects = async () => {
     setLoading(true);
     try {
-      const data = await api.getAssets({
-        q: search,
-        category: categoryFilter,
-        style: styleFilter,
-        status: statusFilter,
+      const res = await api.listAnimations({
+        ...(search.trim() ? { q: search.trim() } : {}),
+        ...(categoryFilter !== 'all' ? { category: categoryFilter } : {}),
+        ...(bgFilter !== 'all' ? { backgroundMode: bgFilter } : {}),
+        ...(statusFilter !== 'all' ? { status: statusFilter } : {}),
       });
-      setAssets(Array.isArray(data?.assets) ? data.assets : []);
+      setProjects(res.projects ?? []);
     } catch (err) {
       onNotify(err instanceof Error ? err.message : 'Failed to load asset library');
     } finally {
@@ -49,299 +56,289 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   };
 
   useEffect(() => {
-    const t = window.setTimeout(() => {
-      void loadAssets();
-    }, 150);
-    return () => window.clearTimeout(t);
-  }, [search, categoryFilter, styleFilter, statusFilter, refreshTick]);
+    void loadProjects();
+  }, [categoryFilter, bgFilter, statusFilter, refreshTick]);
 
-  const toggleSelect = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const toggleSelectAll = () => {
-    if (selectedIds.size === assets.length && assets.length > 0) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(assets.map((a) => a.id)));
+  const handleRenameSubmit = async (id: string) => {
+    if (!renameValue.trim()) {
+      setRenamingId(null);
+      return;
     }
-  };
-
-  const handleBulkZip = async () => {
-    if (selectedIds.size === 0) return;
-    setBusyExport(true);
     try {
-      await downloadExportBundle({
-        assetIds: Array.from(selectedIds),
-        formats: ['svg', 'eps', 'png', 'jpg'],
-        includeAdobeCsv: true,
-        includeShutterstockCsv: true,
-      });
-      onNotify(`Exported ZIP for ${selectedIds.size} selected asset(s)`);
+      await api.updateAnimation(id, { name: renameValue.trim() });
+      setRenamingId(null);
+      await loadProjects();
+      onNotify('Renamed animation project');
     } catch (err) {
-      onNotify(err instanceof Error ? err.message : 'Bulk export failed');
-    } finally {
-      setBusyExport(false);
+      onNotify(err instanceof Error ? err.message : 'Rename failed');
     }
   };
 
-  const handleBulkDelete = async () => {
-    if (selectedIds.size === 0) return;
-    for (const id of Array.from(selectedIds)) {
-      await api.deleteAsset(id);
+  const handleDuplicate = async (id: string) => {
+    try {
+      const res = await api.duplicateAnimation(id);
+      await loadProjects();
+      onNotify(`Duplicated into ${res.project.id}`);
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Duplicate failed');
     }
-    setSelectedIds(new Set());
-    await loadAssets();
-    onNotify(`Deleted ${selectedIds.size} asset(s)`);
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      await api.deleteAnimation(id);
+      await loadProjects();
+      onNotify(`Deleted ${id} and cleaned /output artifacts`);
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Delete failed');
+    }
   };
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-900 tracking-tight">Asset Library</h1>
-          <p className="text-sm text-slate-600 mt-1">
-            Search, inspect, validate, and export your locally persisted stock vector archive.
+          <h1 className="text-2xl font-semibold text-slate-50 tracking-tight">
+            Animation Asset Library
+          </h1>
+          <p className="text-sm text-slate-400 mt-1">
+            Browse, preview, rename, duplicate, edit, and download commercial assets stored in /output.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            disabled={assets.length === 0}
-            onClick={() =>
-              downloadMetadataCsv({
-                assetIds: selectedIds.size > 0 ? Array.from(selectedIds) : undefined,
-                platform: 'adobe_stock',
-              })
-            }
-            className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:border-slate-300 rounded-md cursor-pointer disabled:opacity-40"
-          >
-            Adobe Stock CSV
-          </button>
-          <button
-            type="button"
-            disabled={assets.length === 0}
-            onClick={() =>
-              downloadMetadataCsv({
-                assetIds: selectedIds.size > 0 ? Array.from(selectedIds) : undefined,
-                platform: 'shutterstock',
-              })
-            }
-            className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:border-slate-300 rounded-md cursor-pointer disabled:opacity-40"
-          >
-            Shutterstock CSV
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={() => void loadProjects()}
+          className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-300 bg-[#121722] border border-slate-800 hover:border-slate-700 rounded-md cursor-pointer self-start"
+        >
+          <RefreshCw className="w-3.5 h-3.5" />
+          <span>Refresh</span>
+        </button>
       </div>
 
       {/* Filters Bar */}
-      <div className="bg-white border border-slate-200 rounded-lg p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-        <div className="relative flex-1 max-w-md">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+      <div className="bg-[#121722] border border-slate-800 rounded-lg p-4 flex flex-wrap items-center gap-3">
+        <div className="flex-1 min-w-[200px] flex items-center gap-2 bg-[#0B0E14] border border-slate-700 rounded-md px-3 py-1.5">
+          <Search className="w-3.5 h-3.5 text-slate-500" />
           <input
-            type="search"
+            type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by title, ID, prompt, or keyword..."
-            className="w-full pl-9 pr-8 py-2 text-xs border border-slate-200 rounded-md focus:outline-none focus:border-[#2563EB]"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void loadProjects();
+            }}
+            placeholder="Search by ID, title, prompt, or keyword..."
+            className="w-full text-xs bg-transparent text-slate-100 focus:outline-none"
           />
-          {search && (
-            <button
-              type="button"
-              onClick={() => setSearch('')}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value)}
-            className="px-3 py-2 text-xs border border-slate-200 rounded-md bg-white"
-          >
-            <option value="all">All Categories</option>
-            {STOCK_CATEGORIES.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
+        <select
+          value={categoryFilter}
+          onChange={(e) => setCategoryFilter(e.target.value)}
+          className="px-3 py-1.5 text-xs bg-[#0B0E14] text-slate-200 border border-slate-700 rounded-md"
+        >
+          <option value="all">All Categories</option>
+          {ANIMATION_CATEGORIES.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
 
-          <select
-            value={styleFilter}
-            onChange={(e) => setStyleFilter(e.target.value)}
-            className="px-3 py-2 text-xs border border-slate-200 rounded-md bg-white"
-          >
-            <option value="all">All Styles</option>
-            {DESIGN_STYLES.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
+        <select
+          value={bgFilter}
+          onChange={(e) => setBgFilter(e.target.value)}
+          className="px-3 py-1.5 text-xs bg-[#0B0E14] text-slate-200 border border-slate-700 rounded-md"
+        >
+          <option value="all">All Backgrounds</option>
+          <option value="solid">Solid</option>
+          <option value="green_screen">Green Screen (#00FF00)</option>
+          <option value="transparent">Transparent Alpha</option>
+        </select>
 
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="px-3 py-2 text-xs border border-slate-200 rounded-md bg-white"
-          >
-            <option value="all">All Validation</option>
-            <option value="ready">Commercial Ready</option>
-            <option value="issues">Has Warnings</option>
-          </select>
-        </div>
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          className="px-3 py-1.5 text-xs bg-[#0B0E14] text-slate-200 border border-slate-700 rounded-md"
+        >
+          <option value="all">All Statuses</option>
+          <option value="completed">Passed QA</option>
+          <option value="failed">Failed</option>
+          <option value="draft">Draft</option>
+        </select>
+
+        <button
+          type="button"
+          onClick={() => void loadProjects()}
+          className="px-3 py-1.5 text-xs font-medium text-white bg-[#3B82F6] hover:bg-blue-500 rounded-md cursor-pointer"
+        >
+          Apply
+        </button>
       </div>
 
-      {/* Bulk Action Bar */}
-      {assets.length > 0 && (
-        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 bg-slate-100 rounded-lg text-xs">
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={toggleSelectAll}
-              className="inline-flex items-center gap-1.5 font-medium text-slate-700 cursor-pointer"
-            >
-              {selectedIds.size === assets.length && assets.length > 0 ? (
-                <CheckSquare className="w-4 h-4 text-[#2563EB]" />
-              ) : (
-                <Square className="w-4 h-4 text-slate-500" />
-              )}
-              <span>
-                {selectedIds.size > 0
-                  ? `${selectedIds.size} selected`
-                  : `Select all (${assets.length})`}
-              </span>
-            </button>
-          </div>
-
-          {selectedIds.size > 0 && (
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                disabled={busyExport}
-                onClick={handleBulkZip}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 font-medium text-white bg-[#2563EB] hover:bg-blue-700 rounded-md cursor-pointer disabled:opacity-50"
-              >
-                <Download className="w-3.5 h-3.5" />
-                <span>{busyExport ? 'Building ZIP...' : 'Export Selected ZIP'}</span>
-              </button>
-              <button
-                type="button"
-                onClick={handleBulkDelete}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 font-medium text-red-700 bg-white border border-red-200 hover:bg-red-50 rounded-md cursor-pointer"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Delete Selected</span>
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Asset Grid */}
-      {loading && assets.length === 0 ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {[1, 2, 3].map((i) => (
-            <div key={i} className="h-64 rounded-lg border border-slate-200 bg-white animate-pulse" />
-          ))}
-        </div>
-      ) : assets.length === 0 ? (
-        <div className="bg-white border border-dashed border-slate-300 rounded-lg p-12 text-center">
-          <div className="text-sm font-medium text-slate-900">No matching vector assets</div>
-          <p className="text-xs text-slate-500 mt-1">
-            Generate assets or clear active search filters to see your vector library.
-          </p>
+      {loading && projects.length === 0 ? (
+        <div className="p-10 text-center text-xs text-slate-400">Loading animation projects...</div>
+      ) : projects.length === 0 ? (
+        <div className="p-12 bg-[#121722] border border-dashed border-slate-800 rounded-lg text-center">
+          <FolderOpen className="w-6 h-6 text-slate-500 mx-auto mb-2" />
+          <div className="text-sm font-medium text-slate-200">No matching animations found</div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {assets.map((asset) => {
-            const checked = selectedIds.has(asset.id);
-            return (
-              <article
-                key={asset.id}
-                className={`bg-white border rounded-lg overflow-hidden flex flex-col transition-colors ${
-                  checked ? 'border-[#2563EB]' : 'border-slate-200 hover:border-slate-300'
-                }`}
-              >
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={() => toggleSelect(asset.id)}
-                    aria-label={`Select ${asset.id}`}
-                    className="absolute top-2.5 left-2.5 z-10 p-1 rounded bg-white/90 border border-slate-200 cursor-pointer"
-                  >
-                    {checked ? (
-                      <CheckSquare className="w-4 h-4 text-[#2563EB]" />
-                    ) : (
-                      <Square className="w-4 h-4 text-slate-400" />
-                    )}
-                  </button>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {projects.map((p) => {
+            const previewFile =
+              p.outputFiles.find((f) => f.format === 'mp4_preview') ??
+              p.outputFiles.find((f) => f.format === 'mp4_h264');
+            const videoUrl = outputFileUrl(previewFile?.relativePath);
+            const thumbFile = p.outputFiles.find((f) => f.format === 'thumbnail_png');
+            const thumbUrl = outputFileUrl(thumbFile?.relativePath);
 
-                  <div
-                    onClick={() => onInspectAsset(asset)}
-                    className="cursor-pointer"
-                  >
-                    <SvgViewport
-                      svgContent={asset.svgContent}
-                      backdrop="checkerboard"
-                      className="w-full h-52 border-b border-slate-100"
+            return (
+              <div
+                key={p.id}
+                className="bg-[#121722] border border-slate-800 rounded-lg overflow-hidden flex flex-col"
+              >
+                <div className="h-44 bg-[#0B0E14] checkerboard-dark border-b border-slate-800 flex items-center justify-center overflow-hidden">
+                  {videoUrl ? (
+                    <video
+                      src={videoUrl}
+                      poster={thumbUrl ?? undefined}
+                      autoPlay
+                      loop
+                      muted
+                      playsInline
+                      className="w-full h-full object-contain"
                     />
-                  </div>
+                  ) : thumbUrl ? (
+                    <img src={thumbUrl} alt={p.name} className="w-full h-full object-contain" />
+                  ) : (
+                    <span className="text-xs font-mono text-slate-500">{p.status}</span>
+                  )}
                 </div>
 
-                <div className="p-4 flex-1 flex flex-col justify-between gap-3">
-                  <div
-                    onClick={() => onInspectAsset(asset)}
-                    className="cursor-pointer min-w-0"
-                  >
-                    <div className="flex items-center gap-2 text-[11px] text-slate-500 font-mono tabular-nums">
-                      <span>{asset.id}</span>
-                      <span aria-hidden="true">·</span>
-                      <span className="font-sans">{asset.category}</span>
-                      <span aria-hidden="true">·</span>
-                      <span>{asset.validation.totalVectorPrimitives} paths</span>
+                <div className="p-4 flex-1 flex flex-col justify-between space-y-3">
+                  <div>
+                    <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 tabular-nums">
+                      <span>
+                        {p.id} · {p.resolution} · {p.fps}fps
+                      </span>
+                      <span
+                        className={
+                          p.status === 'completed'
+                            ? 'text-emerald-400'
+                            : p.status === 'failed'
+                            ? 'text-red-400'
+                            : 'text-amber-400'
+                        }
+                      >
+                        {p.status}
+                      </span>
                     </div>
-                    <h3 className="text-sm font-semibold text-slate-900 mt-1 truncate">
-                      {asset.title}
-                    </h3>
+
+                    {renamingId === p.id ? (
+                      <div className="mt-1.5 flex gap-1.5">
+                        <input
+                          type="text"
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          className="flex-1 px-2 py-1 text-xs bg-[#0B0E14] text-slate-100 border border-[#3B82F6] rounded"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void handleRenameSubmit(p.id)}
+                          className="px-2 py-1 text-xs bg-[#3B82F6] text-white rounded cursor-pointer"
+                        >
+                          Save
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="text-sm font-medium text-slate-100 mt-1 truncate">
+                        {p.name}
+                      </div>
+                    )}
+
+                    <div className="text-xs text-slate-400 mt-1 truncate">
+                      {p.category} · {p.backgroundMode.replace('_', ' ')} · {p.reviewStatus}
+                    </div>
                   </div>
 
-                  <div className="flex items-center justify-between pt-2 border-t border-slate-100">
-                    <div className="flex items-center gap-1">
-                      {(['svg', 'eps', 'png', 'jpg'] as const).map((fmt) => (
+                  <div className="pt-2 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => onOpenEditor(p)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 text-xs bg-[#3B82F6] hover:bg-blue-500 text-white rounded cursor-pointer"
+                      >
+                        <Sliders className="w-3 h-3" />
+                        <span>Edit</span>
+                      </button>
+                      <button
+                        type="button"
+                        title="Rename"
+                        onClick={() => {
+                          setRenamingId(p.id);
+                          setRenameValue(p.name);
+                        }}
+                        className="p-1.5 text-slate-400 hover:text-white bg-[#0B0E14] border border-slate-700 rounded cursor-pointer"
+                      >
+                        <Edit3 className="w-3 h-3" />
+                      </button>
+                      <button
+                        type="button"
+                        title="Duplicate project"
+                        onClick={() => void handleDuplicate(p.id)}
+                        className="p-1.5 text-slate-400 hover:text-white bg-[#0B0E14] border border-slate-700 rounded cursor-pointer"
+                      >
+                        <Copy className="w-3 h-3" />
+                      </button>
+                      <button
+                        type="button"
+                        title="Delete project"
+                        onClick={() => void handleDelete(p.id)}
+                        className="p-1.5 text-slate-400 hover:text-red-400 bg-[#0B0E14] border border-slate-700 rounded cursor-pointer"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      {p.status === 'completed' && (
                         <button
-                          key={fmt}
                           type="button"
                           onClick={() =>
-                            downloadAssetFormat(asset.id, fmt).then(() =>
-                              onNotify(`Exported ${asset.id}.${fmt}`)
+                            void downloadAnimationFormat(
+                              p.id,
+                              p.backgroundMode === 'transparent' ? 'mov_alpha' : 'mp4_h264'
+                            ).catch((err) =>
+                              onNotify(err instanceof Error ? err.message : 'Download failed')
                             )
                           }
-                          className="px-2 py-1 text-[10px] font-semibold uppercase bg-slate-100 hover:bg-slate-900 hover:text-white text-slate-700 rounded cursor-pointer"
+                          className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-mono text-slate-200 bg-[#0B0E14] border border-slate-700 hover:border-[#3B82F6] rounded cursor-pointer"
                         >
-                          {fmt}
+                          <Download className="w-3 h-3" />
+                          <span>{p.backgroundMode === 'transparent' ? 'Alpha' : 'MP4'}</span>
                         </button>
-                      ))}
+                      )}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void downloadAnimationZip({
+                            projectIds: [p.id],
+                            formats: ['mp4_h264', 'svg_animated', 'lottie_json', 'source_zip'],
+                            includeAdobeCsv: true,
+                            includeShutterstockCsv: true,
+                          }).catch((err) =>
+                            onNotify(err instanceof Error ? err.message : 'ZIP download failed')
+                          )
+                        }
+                        className="px-2 py-1 text-[11px] font-mono text-slate-300 bg-[#0B0E14] border border-slate-700 hover:border-[#3B82F6] rounded cursor-pointer"
+                      >
+                        ZIP
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => onInspectAsset(asset)}
-                      className="text-xs font-medium text-[#2563EB] hover:underline cursor-pointer"
-                    >
-                      Inspect
-                    </button>
                   </div>
                 </div>
-              </article>
+              </div>
             );
           })}
         </div>

@@ -5,6 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
 import type {
+  AnimationBatchItem,
+  AnimationBatchJob,
+  AnimationProject,
   BatchItem,
   BatchJob,
   ProductionLogEntry,
@@ -143,6 +146,75 @@ CREATE TABLE IF NOT EXISTS system_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS animation_projects (
+  id TEXT PRIMARY KEY,
+  batch_id TEXT,
+  name TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  category TEXT NOT NULL,
+  animation_type TEXT NOT NULL,
+  visual_style TEXT NOT NULL,
+  background_mode TEXT NOT NULL,
+  background_color TEXT NOT NULL,
+  resolution TEXT NOT NULL,
+  width INTEGER NOT NULL,
+  height INTEGER NOT NULL,
+  duration_sec REAL NOT NULL,
+  fps INTEGER NOT NULL,
+  palette_json TEXT NOT NULL,
+  layers_json TEXT NOT NULL,
+  metadata_json TEXT NOT NULL,
+  provider_slug TEXT NOT NULL,
+  model TEXT NOT NULL,
+  status TEXT NOT NULL,
+  pipeline_stage TEXT NOT NULL,
+  review_status TEXT NOT NULL DEFAULT 'pending_review',
+  error_message TEXT,
+  project_hash TEXT NOT NULL,
+  qa_json TEXT,
+  output_files_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS animation_batches (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  base_prompt TEXT NOT NULL,
+  category TEXT NOT NULL,
+  animation_type TEXT NOT NULL,
+  visual_style TEXT NOT NULL,
+  background_mode TEXT NOT NULL,
+  resolution TEXT NOT NULL,
+  duration_sec REAL NOT NULL,
+  fps INTEGER NOT NULL,
+  provider_slug TEXT NOT NULL,
+  model TEXT NOT NULL,
+  requested_count INTEGER NOT NULL,
+  concurrency INTEGER NOT NULL DEFAULT 2,
+  export_formats_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  completed_count INTEGER NOT NULL DEFAULT 0,
+  failed_count INTEGER NOT NULL DEFAULT 0,
+  duplicate_skipped_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  finished_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS animation_batch_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_id TEXT NOT NULL REFERENCES animation_batches(id) ON DELETE CASCADE,
+  seq_index INTEGER NOT NULL,
+  variation_prompt TEXT NOT NULL,
+  animation_type TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
+  project_id TEXT,
+  updated_at TEXT NOT NULL
+);
 `);
 
 export const DEFAULT_SETTINGS: SystemSettings = {
@@ -224,6 +296,7 @@ function writeSecretsFile(secrets: Record<string, string>): void {
 
 const ENV_KEY_MAP: Record<ProviderSlug, string | undefined> = {
   gemini: 'GEMINI_API_KEY',
+  openai: 'OPENAI_API_KEY',
   groq: 'GROQ_API_KEY',
   openrouter: 'OPENROUTER_API_KEY',
   mistral: 'MISTRAL_API_KEY',
@@ -476,4 +549,68 @@ export function updateProviderRecordStatus(
     now,
     slug
   );
+}
+
+export function mapAnimationProjectRow(row: Record<string, unknown>): AnimationProject {
+  return {
+    id: String(row.id),
+    batchId: row.batch_id ? String(row.batch_id) : null,
+    name: String(row.name),
+    prompt: String(row.prompt),
+    category: row.category as AnimationProject['category'],
+    animationType: row.animation_type as AnimationProject['animationType'],
+    visualStyle: row.visual_style as AnimationProject['visualStyle'],
+    backgroundMode: row.background_mode as AnimationProject['backgroundMode'],
+    backgroundColor: String(row.background_color),
+    resolution: row.resolution as AnimationProject['resolution'],
+    width: Number(row.width),
+    height: Number(row.height),
+    durationSec: Number(row.duration_sec),
+    fps: Number(row.fps) as AnimationProject['fps'],
+    palette: JSON.parse(String(row.palette_json)),
+    layers: JSON.parse(String(row.layers_json)),
+    metadata: JSON.parse(String(row.metadata_json)),
+    providerSlug: row.provider_slug as AnimationProject['providerSlug'],
+    model: String(row.model),
+    status: row.status as AnimationProject['status'],
+    pipelineStage: String(row.pipeline_stage),
+    reviewStatus: (row.review_status as AnimationProject['reviewStatus']) || 'pending_review',
+    errorMessage: row.error_message ? String(row.error_message) : null,
+    projectHash: String(row.project_hash),
+    qaReport: row.qa_json ? JSON.parse(String(row.qa_json)) : null,
+    outputFiles: JSON.parse(String(row.output_files_json || '[]')),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+export function mapAnimationBatchRow(
+  row: Record<string, unknown>,
+  items?: AnimationBatchItem[]
+): AnimationBatchJob {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    basePrompt: String(row.base_prompt),
+    category: row.category as AnimationBatchJob['category'],
+    animationType: row.animation_type as AnimationBatchJob['animationType'],
+    visualStyle: row.visual_style as AnimationBatchJob['visualStyle'],
+    backgroundMode: row.background_mode as AnimationBatchJob['backgroundMode'],
+    resolution: row.resolution as AnimationBatchJob['resolution'],
+    durationSec: Number(row.duration_sec),
+    fps: Number(row.fps) as AnimationBatchJob['fps'],
+    providerSlug: row.provider_slug as AnimationBatchJob['providerSlug'],
+    model: String(row.model),
+    requestedCount: Number(row.requested_count),
+    concurrency: Number(row.concurrency),
+    exportFormats: JSON.parse(String(row.export_formats_json || '[]')),
+    status: row.status as AnimationBatchJob['status'],
+    completedCount: Number(row.completed_count),
+    failedCount: Number(row.failed_count),
+    duplicateSkippedCount: Number(row.duplicate_skipped_count),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+    finishedAt: row.finished_at ? String(row.finished_at) : null,
+    items,
+  };
 }

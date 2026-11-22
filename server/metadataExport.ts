@@ -1,4 +1,4 @@
-import type { StockAsset, StockCategory } from '../src/types/stockforge.js';
+import type { AnimationProject, StockAsset, StockCategory } from '../src/types/stockforge.js';
 
 export const ADOBE_STOCK_CATEGORIES = [
   'Abstract',
@@ -221,3 +221,75 @@ export function buildShutterstockCsv(assets: StockAsset[], fileExtension = 'eps'
   });
   return [header, ...rows].join('\n') + '\n';
 }
+
+/**
+ * Adobe Stock Video / Motion Graphics CSV Specification:
+ * Columns: Filename, Title, Keywords, Category, Releases
+ */
+export function buildAnimationAdobeStockCsv(
+  projects: AnimationProject[],
+  fileExtension: 'mp4' | 'mov' | 'svg' = 'mp4'
+): string {
+  const header = 'Filename,Title,Keywords,Category,Releases';
+  const rows = projects.map((p) => {
+    const ext =
+      fileExtension === 'mov' && p.backgroundMode === 'transparent'
+        ? 'alpha.mov'
+        : fileExtension === 'mov'
+        ? 'prores.mov'
+        : fileExtension;
+    const filename =
+      ext === 'alpha.mov'
+        ? `${p.id}-alpha.mov`
+        : ext === 'prores.mov'
+        ? `${p.id}-prores.mov`
+        : `${p.id}.${ext}`;
+    const title = (p.metadata.title || p.name).slice(0, 200);
+    const keywords = p.metadata.keywords.slice(0, 49).join(', ');
+    const category = p.metadata.adobeCategory || 'Abstract';
+    return [
+      escapeCsvCell(filename),
+      escapeCsvCell(title),
+      escapeCsvCell(keywords),
+      escapeCsvCell(category),
+      '',
+    ].join(',');
+  });
+  return [header, ...rows].join('\n') + '\n';
+}
+
+/**
+ * Shutterstock Video / Footage CSV Specification:
+ * Columns: Filename, Description, Keywords, Categories, Editorial, Mature content, Duration, Resolution, FPS
+ */
+export function buildAnimationShutterstockCsv(
+  projects: AnimationProject[],
+  fileExtension: 'mp4' | 'mov' | 'svg' = 'mp4'
+): string {
+  const header =
+    'Filename,Description,Keywords,Categories,Editorial,Mature content,Duration,Resolution,FPS';
+  const rows = projects.map((p) => {
+    const filename =
+      fileExtension === 'mov' && p.backgroundMode === 'transparent'
+        ? `${p.id}-alpha.mov`
+        : fileExtension === 'mov'
+        ? `${p.id}-prores.mov`
+        : `${p.id}.${fileExtension}`;
+    const description = (p.metadata.description || p.metadata.title || p.name).slice(0, 200);
+    const keywords = p.metadata.keywords.slice(0, 49).join(',');
+    const categories = p.metadata.shutterstockCategory || 'Abstract';
+    return [
+      escapeCsvCell(filename),
+      escapeCsvCell(description),
+      escapeCsvCell(keywords),
+      escapeCsvCell(categories),
+      'no',
+      'no',
+      `${p.durationSec}s`,
+      p.resolution,
+      String(p.fps),
+    ].join(',');
+  });
+  return [header, ...rows].join('\n') + '\n';
+}
+

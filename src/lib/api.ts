@@ -1,28 +1,26 @@
 import type {
+  AnimationBatchJob,
+  AnimationCategory,
+  AnimationExportFormat,
+  AnimationProject,
+  AnimationType,
+  BackgroundMode,
   BatchJob,
   DashboardSummary,
   DesignStyle,
+  FpsOption,
   ProductionLogEntry,
   ProviderSlug,
   ProviderState,
+  ResolutionPreset,
+  ReviewStatus,
   StockAsset,
   StockCategory,
+  SystemDiagnostics,
   SystemSettings,
   TargetPlatform,
+  VisualStyle,
 } from '../types/stockforge';
-import {
-  deleteServerlessAsset,
-  getServerlessAsset,
-  getServerlessAssets,
-  getServerlessBatch,
-  getServerlessBatches,
-  getServerlessRuntimeFlag,
-  mergeAssets,
-  mergeBatches,
-  saveServerlessAssets,
-  saveServerlessBatches,
-  setServerlessRuntimeFlag,
-} from './serverlessStore';
 
 export const STOCK_CATEGORIES: StockCategory[] = [
   'Abstract',
@@ -57,6 +55,104 @@ export const TARGET_PLATFORMS: { id: TargetPlatform; label: string }[] = [
   { id: 'shutterstock', label: 'Shutterstock' },
 ];
 
+export const ANIMATION_CATEGORIES: AnimationCategory[] = [
+  'Motion Graphics',
+  'Green Screen Animation',
+  'Transparent Background Animation',
+  'Business & Technology',
+  'Nature & Environment',
+  'Medical & Healthcare',
+  'Educational & General Stock',
+];
+
+export const ANIMATION_TYPES_BY_CATEGORY: Record<
+  AnimationCategory,
+  { id: AnimationType; label: string }[]
+> = {
+  'Motion Graphics': [
+    { id: 'gradient_bg', label: 'Flowing Gradient Background' },
+    { id: 'geometric_motion', label: 'Geometric Kinetic Motion' },
+    { id: 'particles', label: 'Particle Field Animation' },
+    { id: 'light_trails', label: 'Light Trails & Streaks' },
+    { id: 'energy', label: 'Energy Pulse Effect' },
+    { id: 'fluid_waves', label: 'Fluid Abstract Waves' },
+  ],
+  'Green Screen Animation': [
+    { id: 'cursor_click', label: 'Cursor Move & Click' },
+    { id: 'ui_elements', label: 'Animated UI Controls' },
+    { id: 'arrows', label: 'Motion Directional Arrows' },
+    { id: 'notification', label: 'Notification Alert Pop' },
+    { id: 'social_interaction', label: 'Social Like / Subscribe' },
+    { id: 'hud', label: 'HUD Telemetry Overlay' },
+  ],
+  'Transparent Background Animation': [
+    { id: 'smoke', label: 'Rising Smoke Dispersion' },
+    { id: 'fire', label: 'Flame & Ember Overlay' },
+    { id: 'sparkles', label: 'Starlight Sparkles' },
+    { id: 'particles', label: 'Glowing Floating Particles' },
+    { id: 'energy', label: 'Energy Burst Overlay' },
+    { id: 'ui_elements', label: 'Explainer UI Badge' },
+  ],
+  'Business & Technology': [
+    { id: 'data_chart', label: 'Animated Financial Chart' },
+    { id: 'network', label: 'Network Node Connections' },
+    { id: 'cloud_security', label: 'Cloud & Cyber Security' },
+    { id: 'ui_elements', label: 'SaaS Interface Element' },
+  ],
+  'Nature & Environment': [
+    { id: 'ocean_water', label: 'Ocean & Water Waves' },
+    { id: 'falling_leaves', label: 'Falling Leaves' },
+    { id: 'rain_snow', label: 'Rain & Snow Atmosphere' },
+    { id: 'clouds_wind', label: 'Clouds & Wind Motion' },
+    { id: 'plant_growth', label: 'Botanical Growth' },
+    { id: 'particles', label: 'Natural Pollen / Dust' },
+  ],
+  'Medical & Healthcare': [
+    { id: 'heartbeat_ecg', label: 'Heartbeat ECG Trace' },
+    { id: 'medical_icons', label: 'Medical & Clinical Pulse' },
+  ],
+  'Educational & General Stock': [
+    { id: 'science_atom', label: 'Atomic Orbit Simulation' },
+    { id: 'math_geometry', label: 'Mathematical Geometry' },
+    { id: 'industry_gears', label: 'Interlocking Industry Gears' },
+    { id: 'arrows', label: 'Diagram Flow Arrows' },
+  ],
+};
+
+export const VISUAL_STYLES: VisualStyle[] = [
+  'Clean Vector Motion',
+  'Luminous Gradient',
+  'Minimal HUD',
+  'Isometric Tech',
+  'Organic Fluid',
+  'Broadcast Flat',
+];
+
+export const RESOLUTIONS: { id: ResolutionPreset; label: string }[] = [
+  { id: '1920x1080', label: 'HD 1920×1080 (16:9)' },
+  { id: '3840x2160', label: '4K UHD 3840×2160 (16:9)' },
+  { id: '1080x1920', label: 'Vertical 1080×1920 (9:16)' },
+  { id: '1080x1080', label: 'Square 1080×1080 (1:1)' },
+];
+
+export const FPS_OPTIONS: FpsOption[] = [24, 25, 30, 60];
+
+export const EXPORT_FORMAT_LABELS: Record<
+  AnimationExportFormat,
+  { label: string; ext: string; note: string }
+> = {
+  mp4_h264: { label: 'MP4 H.264 Master', ext: '.mp4', note: 'libx264 commercial delivery' },
+  mov_prores: { label: 'MOV ProRes 422 HQ', ext: '.mov', note: 'Broadcast editing master' },
+  mov_alpha: { label: 'MOV ProRes 4444 Alpha', ext: '.mov', note: 'yuva444p10le transparency' },
+  png_sequence: { label: 'PNG RGBA Sequence ZIP', ext: '.zip', note: 'Lossless frame-by-frame alpha' },
+  mp4_preview: { label: 'MP4 Web Preview', ext: '.mp4', note: '640p fast playback stream' },
+  gif_preview: { label: 'Animated GIF Preview', ext: '.gif', note: 'Palette-optimized loop' },
+  thumbnail_png: { label: 'Static Poster PNG', ext: '.png', note: 'Mid-frame 640px preview' },
+  svg_animated: { label: 'Animated SMIL SVG', ext: '.svg', note: 'Editable vector source' },
+  lottie_json: { label: 'Lottie JSON (v5.7.4)', ext: '.json', note: 'Web & mobile vector motion' },
+  source_zip: { label: 'Full Project Source ZIP', ext: '.zip', note: 'Project JSON + SVG + Lottie' },
+};
+
 async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...init,
@@ -72,9 +168,7 @@ async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
       data = JSON.parse(text) as Record<string, unknown>;
     } catch {
       if (!res.ok) {
-        throw new Error(
-          `Request failed (HTTP ${res.status}${res.status === 504 ? ' Gateway Timeout — upstream AI model took too long; try gemini-3.1-flash-lite or Groq' : ''})`
-        );
+        throw new Error(`Request failed (HTTP ${res.status})`);
       }
       throw new Error(`Unexpected non-JSON response from ${url} (HTTP ${res.status})`);
     }
@@ -89,114 +183,12 @@ async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
-function filterAssetsByParams(assets: StockAsset[], params?: Record<string, string>): StockAsset[] {
-  if (!params) return assets;
-  const q = String(params.q ?? '').trim().toLowerCase();
-  const category = String(params.category ?? 'all');
-  const style = String(params.style ?? 'all');
-  const platform = String(params.platform ?? 'all');
-  const batchId = String(params.batchId ?? '');
-  const status = String(params.status ?? 'all');
-
-  return assets.filter((a) => {
-    if (category !== 'all' && a.category !== category) return false;
-    if (style !== 'all' && a.style !== style) return false;
-    if (platform !== 'all' && a.targetPlatform !== platform && a.targetPlatform !== 'both') {
-      return false;
-    }
-    if (batchId && a.batchId !== batchId) return false;
-    if (status === 'ready' && !a.validation.commercialReady) return false;
-    if (status === 'issues' && a.validation.commercialReady) return false;
-    if (q) {
-      const hit =
-        a.id.toLowerCase().includes(q) ||
-        a.title.toLowerCase().includes(q) ||
-        a.prompt.toLowerCase().includes(q) ||
-        a.keywords.some((k) => k.toLowerCase().includes(q));
-      if (!hit) return false;
-    }
-    return true;
-  });
-}
-
-async function syncCompletedBatchAssets(batch: BatchJob): Promise<void> {
-  if (!getServerlessRuntimeFlag() || !batch.items || batch.items.length === 0) return;
-  const completedIds = batch.items
-    .filter((i) => i.status === 'completed' && typeof i.assetId === 'string' && i.assetId)
-    .map((i) => i.assetId as string);
-  if (completedIds.length === 0) return;
-
-  for (const assetId of completedIds) {
-    const cached = await getServerlessAsset(assetId);
-    if (!cached) {
-      try {
-        const res = await apiJson<{ asset: StockAsset }>(
-          `/api/assets/${encodeURIComponent(assetId)}`
-        );
-        if (res?.asset) {
-          await saveServerlessAssets([res.asset]);
-        }
-      } catch {
-        // ignore if asset already evicted from warm Lambda
-      }
-    }
-  }
-}
-
 export const api = {
-  getDashboard: async (): Promise<DashboardSummary> => {
-    const data = await apiJson<DashboardSummary>('/api/dashboard');
-    if (typeof data.isServerless === 'boolean') {
-      setServerlessRuntimeFlag(data.isServerless);
-    }
-    if (!data.isServerless) {
-      return data;
-    }
+  getDashboard: () => apiJson<DashboardSummary>('/api/dashboard'),
+  getDiagnostics: () => apiJson<SystemDiagnostics>('/api/diagnostics'),
 
-    await saveServerlessAssets(data.recentAssets ?? []);
-    const [localAssets, localBatches] = await Promise.all([
-      getServerlessAssets(),
-      getServerlessBatches(),
-    ]);
-    const mergedAssets = mergeAssets(data.recentAssets ?? [], localAssets);
-
-    const categoryMap = new Map<string, number>();
-    let cachedSvgBytes = 0;
-    for (const a of mergedAssets) {
-      categoryMap.set(a.category, (categoryMap.get(a.category) ?? 0) + 1);
-      if (a.svgContent) cachedSvgBytes += a.svgContent.length;
-    }
-    const categoryBreakdown =
-      mergedAssets.length >= data.totalAssets
-        ? Array.from(categoryMap.entries())
-            .map(([category, count]) => ({ category, count }))
-            .sort((a, b) => b.count - a.count)
-        : data.categoryBreakdown;
-
-    return {
-      ...data,
-      totalAssets: Math.max(data.totalAssets, mergedAssets.length),
-      commercialReadyAssets: Math.max(
-        data.commercialReadyAssets,
-        mergedAssets.filter((a) => a.validation.commercialReady).length
-      ),
-      totalBatches: Math.max(data.totalBatches, localBatches.length),
-      storageBytes: Math.max(data.storageBytes, cachedSvgBytes),
-      recentAssets: mergedAssets.slice(0, 6),
-      categoryBreakdown,
-    };
-  },
-
-  getProviders: async () => {
-    const data = await apiJson<{ providers: ProviderState[]; isServerless?: boolean }>(
-      '/api/providers'
-    );
-    if (typeof data.isServerless === 'boolean') {
-      setServerlessRuntimeFlag(data.isServerless);
-    }
-    return data;
-  },
-
+  // Providers
+  getProviders: () => apiJson<{ providers: ProviderState[]; isServerless?: boolean }>('/api/providers'),
   saveProviderConfig: (
     slug: ProviderSlug,
     payload: {
@@ -211,7 +203,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-
   testProvider: (
     slug: ProviderSlug,
     payload?: { apiKey?: string; baseUrl?: string; selectedModel?: string }
@@ -227,266 +218,178 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload ?? {}),
     }),
-
   activateProvider: (slug: ProviderSlug) =>
     apiJson<{ provider: ProviderState; providers: ProviderState[] }>(
       `/api/providers/${slug}/activate`,
       { method: 'POST' }
     ),
 
-  generateAssets: async (payload: {
+  // Animation Projects
+  listAnimations: (params?: Record<string, string>) => {
+    const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+    return apiJson<{
+      projects: AnimationProject[];
+      adobeCategories: string[];
+      shutterstockCategories: string[];
+    }>(`/api/animations${qs}`);
+  },
+  getAnimation: (id: string) =>
+    apiJson<{ project: AnimationProject }>(`/api/animations/${encodeURIComponent(id)}`),
+  getAnimationSource: (id: string) =>
+    apiJson<{ svgAnimated: string; lottieJson: Record<string, unknown>; project: AnimationProject }>(
+      `/api/animations/${encodeURIComponent(id)}/source`
+    ),
+  createAnimation: (payload: {
+    name?: string;
     prompt: string;
-    category: StockCategory;
-    style: DesignStyle;
-    quantity: number;
-    targetPlatform: TargetPlatform;
-    providerSlug?: ProviderSlug;
+    category: AnimationCategory;
+    animationType?: AnimationType;
+    visualStyle: VisualStyle;
+    backgroundMode: BackgroundMode;
+    backgroundColor?: string;
+    resolution: ResolutionPreset;
+    durationSec: number;
+    fps: FpsOption;
+    targetPlatform?: TargetPlatform;
+    providerSlug?: ProviderSlug | 'procedural';
     model?: string;
-  }) => {
-    const res = await apiJson<{ assets: StockAsset[]; errors: string[] }>('/api/generate', {
+    exportFormats?: AnimationExportFormat[];
+    renderNow?: boolean;
+  }) =>
+    apiJson<{ project: AnimationProject; error?: string }>('/api/animations/create', {
       method: 'POST',
       body: JSON.stringify(payload),
-    });
-    if (getServerlessRuntimeFlag() && Array.isArray(res.assets) && res.assets.length > 0) {
-      await saveServerlessAssets(res.assets);
+    }),
+  updateAnimation: (
+    id: string,
+    payload: Partial<AnimationProject> & {
+      reRender?: boolean;
+      exportFormats?: AnimationExportFormat[];
     }
-    return res;
-  },
+  ) =>
+    apiJson<{ project: AnimationProject }>(`/api/animations/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  renderAnimation: (id: string, exportFormats?: AnimationExportFormat[]) =>
+    apiJson<{ project: AnimationProject; error?: string }>(
+      `/api/animations/${encodeURIComponent(id)}/render`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ exportFormats }),
+      }
+    ),
+  duplicateAnimation: (id: string) =>
+    apiJson<{ project: AnimationProject }>(
+      `/api/animations/${encodeURIComponent(id)}/duplicate`,
+      { method: 'POST' }
+    ),
+  reviewAnimation: (id: string, reviewStatus: ReviewStatus) =>
+    apiJson<{ project: AnimationProject }>(
+      `/api/animations/${encodeURIComponent(id)}/review`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ reviewStatus }),
+      }
+    ),
+  regenerateAnimationMetadata: (id: string) =>
+    apiJson<{ project: AnimationProject }>(
+      `/api/animations/${encodeURIComponent(id)}/regenerate-metadata`,
+      { method: 'POST' }
+    ),
+  deleteAnimation: (id: string) =>
+    apiJson<{ ok: boolean }>(`/api/animations/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  getFrameSvg: (id: string, timeSec: number, projectOverride?: Partial<AnimationProject>) =>
+    apiJson<{ svg: string; timeSec: number }>(
+      `/api/animations/${encodeURIComponent(id)}/frame-svg`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ timeSec, projectOverride }),
+      }
+    ),
 
-  getAssets: async (params?: Record<string, string>) => {
+  // Animation Batches
+  listAnimationBatches: () =>
+    apiJson<{ batches: AnimationBatchJob[] }>('/api/animation-batches'),
+  createAnimationBatch: (payload: {
+    name: string;
+    basePrompt: string;
+    category: AnimationCategory;
+    animationType: AnimationType | 'mixed';
+    visualStyle: VisualStyle;
+    backgroundMode: BackgroundMode;
+    resolution: ResolutionPreset;
+    durationSec: number;
+    fps: FpsOption;
+    providerSlug: ProviderSlug | 'procedural';
+    model: string;
+    requestedCount: number;
+    concurrency: number;
+    exportFormats: AnimationExportFormat[];
+  }) =>
+    apiJson<{ batch: AnimationBatchJob }>('/api/animation-batches', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  getAnimationBatch: (id: string) =>
+    apiJson<{ batch: AnimationBatchJob }>(`/api/animation-batches/${encodeURIComponent(id)}`),
+  pauseAnimationBatch: (id: string) =>
+    apiJson<{ batch: AnimationBatchJob }>(
+      `/api/animation-batches/${encodeURIComponent(id)}/pause`,
+      { method: 'POST' }
+    ),
+  resumeAnimationBatch: (id: string, retryFailed = false) =>
+    apiJson<{ batch: AnimationBatchJob }>(
+      `/api/animation-batches/${encodeURIComponent(id)}/resume`,
+      { method: 'POST', body: JSON.stringify({ retryFailed }) }
+    ),
+  cancelAnimationBatch: (id: string) =>
+    apiJson<{ batch: AnimationBatchJob }>(
+      `/api/animation-batches/${encodeURIComponent(id)}/cancel`,
+      { method: 'POST' }
+    ),
+
+  // Legacy vector & settings endpoints
+  getAssets: (params?: Record<string, string>) => {
     const qs = params ? '?' + new URLSearchParams(params).toString() : '';
-    const data = await apiJson<{
+    return apiJson<{
       assets: StockAsset[];
       adobeCategories: string[];
       shutterstockCategories: string[];
     }>(`/api/assets${qs}`);
-
-    if (!getServerlessRuntimeFlag()) {
-      return data;
-    }
-
-    await saveServerlessAssets(data.assets ?? []);
-    const localAssets = await getServerlessAssets();
-    const merged = mergeAssets(data.assets ?? [], localAssets);
-    return {
-      ...data,
-      assets: filterAssetsByParams(merged, params),
-    };
   },
-
-  getAsset: async (id: string) => {
-    try {
-      const res = await apiJson<{ asset: StockAsset }>(`/api/assets/${encodeURIComponent(id)}`);
-      if (getServerlessRuntimeFlag() && res.asset) {
-        await saveServerlessAssets([res.asset]);
-      }
-      return res;
-    } catch (err) {
-      if (getServerlessRuntimeFlag()) {
-        const cached = await getServerlessAsset(id);
-        if (cached) {
-          return { asset: cached };
-        }
-      }
-      throw err;
-    }
-  },
-
-  updateAsset: async (
-    id: string,
-    payload: Partial<{
-      title: string;
-      description: string;
-      keywords: string[];
-      adobeCategory: string;
-      shutterstockCategory: string;
-      targetPlatform: TargetPlatform;
-      svgContent: string;
-    }>
-  ) => {
-    const fallbackAsset = getServerlessRuntimeFlag() ? await getServerlessAsset(id) : null;
-    const res = await apiJson<{ asset: StockAsset }>(`/api/assets/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      body: JSON.stringify(fallbackAsset ? { ...payload, fallbackAsset } : payload),
-    });
-    if (getServerlessRuntimeFlag() && res.asset) {
-      await saveServerlessAssets([res.asset]);
-    }
-    return res;
-  },
-
-  regenerateAssetMetadata: async (id: string) => {
-    const fallbackAsset = getServerlessRuntimeFlag() ? await getServerlessAsset(id) : null;
-    const res = await apiJson<{ asset: StockAsset }>(
-      `/api/assets/${encodeURIComponent(id)}/regenerate-metadata`,
-      {
-        method: 'POST',
-        body: JSON.stringify(fallbackAsset ? { fallbackAsset } : {}),
-      }
-    );
-    if (getServerlessRuntimeFlag() && res.asset) {
-      await saveServerlessAssets([res.asset]);
-    }
-    return res;
-  },
-
-  deleteAsset: async (id: string) => {
-    const res = await apiJson<{ ok: boolean }>(`/api/assets/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-    });
-    if (getServerlessRuntimeFlag()) {
-      await deleteServerlessAsset(id);
-    }
-    return res;
-  },
-
-  getBatches: async () => {
-    const data = await apiJson<{ batches: BatchJob[]; isServerless?: boolean }>('/api/batches');
-    if (typeof data.isServerless === 'boolean') {
-      setServerlessRuntimeFlag(data.isServerless);
-    }
-    if (!getServerlessRuntimeFlag()) {
-      return data;
-    }
-    await saveServerlessBatches(data.batches ?? []);
-    const localBatches = await getServerlessBatches();
-    return {
-      ...data,
-      batches: mergeBatches(data.batches ?? [], localBatches),
-    };
-  },
-
-  createBatch: async (payload: {
-    name: string;
-    basePrompt: string;
-    category: StockCategory;
-    style: DesignStyle;
-    targetPlatform: TargetPlatform;
-    requestedCount: number;
-    concurrency: number;
-    providerSlug?: ProviderSlug;
-    model?: string;
-  }) => {
-    const res = await apiJson<{ batch: BatchJob; isServerless?: boolean }>('/api/batches', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-    if (typeof res.isServerless === 'boolean') {
-      setServerlessRuntimeFlag(res.isServerless);
-    }
-    if (getServerlessRuntimeFlag() && res.batch) {
-      await saveServerlessBatches([res.batch]);
-    }
-    return res;
-  },
-
-  getBatch: async (id: string) => {
-    try {
-      const res = await apiJson<{ batch: BatchJob; isServerless?: boolean }>(
-        `/api/batches/${encodeURIComponent(id)}`
-      );
-      if (typeof res.isServerless === 'boolean') {
-        setServerlessRuntimeFlag(res.isServerless);
-      }
-      if (getServerlessRuntimeFlag() && res.batch) {
-        await saveServerlessBatches([res.batch]);
-        await syncCompletedBatchAssets(res.batch);
-      }
-      return res;
-    } catch (err) {
-      if (getServerlessRuntimeFlag()) {
-        const cached = await getServerlessBatch(id);
-        if (cached) {
-          return { batch: cached, isServerless: true };
-        }
-      }
-      throw err;
-    }
-  },
-
-  stepBatch: async (id: string) => {
-    const res = await apiJson<{ batch: BatchJob; isServerless?: boolean }>(
-      `/api/batches/${encodeURIComponent(id)}/step`,
-      { method: 'POST' }
-    );
-    if (typeof res.isServerless === 'boolean') {
-      setServerlessRuntimeFlag(res.isServerless);
-    }
-    if (getServerlessRuntimeFlag() && res.batch) {
-      await saveServerlessBatches([res.batch]);
-      await syncCompletedBatchAssets(res.batch);
-    }
-    return res;
-  },
-
-  pauseBatch: async (id: string) => {
-    const res = await apiJson<{ batch: BatchJob }>(
-      `/api/batches/${encodeURIComponent(id)}/pause`,
-      { method: 'POST' }
-    );
-    if (getServerlessRuntimeFlag() && res.batch) {
-      await saveServerlessBatches([res.batch]);
-    }
-    return res;
-  },
-
-  resumeBatch: async (id: string, retryFailed = false) => {
-    const res = await apiJson<{ batch: BatchJob }>(
-      `/api/batches/${encodeURIComponent(id)}/resume`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ retryFailed }),
-      }
-    );
-    if (getServerlessRuntimeFlag() && res.batch) {
-      await saveServerlessBatches([res.batch]);
-    }
-    return res;
-  },
-
-  cancelBatch: async (id: string) => {
-    const res = await apiJson<{ batch: BatchJob }>(
-      `/api/batches/${encodeURIComponent(id)}/cancel`,
-      { method: 'POST' }
-    );
-    if (getServerlessRuntimeFlag() && res.batch) {
-      await saveServerlessBatches([res.batch]);
-    }
-    return res;
-  },
-
+  getBatches: () => apiJson<{ batches: BatchJob[] }>('/api/batches'),
   getLogs: (limit = 150) => apiJson<{ logs: ProductionLogEntry[] }>(`/api/logs?limit=${limit}`),
-
-  getSettings: async () => {
-    const data = await apiJson<{
+  getSettings: () =>
+    apiJson<{
       settings: SystemSettings;
       storageBytes: number;
       assetsDir: string;
       isServerless?: boolean;
-    }>('/api/settings');
-    if (typeof data.isServerless === 'boolean') {
-      setServerlessRuntimeFlag(data.isServerless);
-    }
-    return data;
-  },
-
+    }>('/api/settings'),
   saveSettings: (settings: Partial<SystemSettings>) =>
     apiJson<{ settings: SystemSettings }>('/api/settings', {
       method: 'PUT',
       body: JSON.stringify(settings),
     }),
-
   getBackups: () =>
     apiJson<{ backups: { filename: string; sizeBytes: number; createdAt: string }[] }>(
       '/api/backups'
     ),
-
   createBackup: () =>
     apiJson<{
       backup: { filename: string; sizeBytes: number; assetCount: number };
       backups: { filename: string; sizeBytes: number; createdAt: string }[];
     }>('/api/backups', { method: 'POST' }),
 };
+
+export function outputFileUrl(relativePath?: string | null): string | null {
+  if (!relativePath) return null;
+  const clean = relativePath.replace(/^\/+/, '');
+  return `/api/output-file/${clean.split('/').map(encodeURIComponent).join('/')}`;
+}
 
 export function triggerBlobDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -499,108 +402,81 @@ export function triggerBlobDownload(blob: Blob, filename: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export async function downloadAssetFormat(
-  assetId: string,
-  format: 'svg' | 'eps' | 'png' | 'jpg'
+export async function downloadAnimationFormat(
+  projectId: string,
+  format: AnimationExportFormat
 ): Promise<void> {
-  const res = await fetch(`/api/assets/${encodeURIComponent(assetId)}/export/${format}`);
-  if (res.ok) {
-    const blob = await res.blob();
-    triggerBlobDownload(blob, `${assetId}.${format}`);
-    return;
-  }
-
-  if (getServerlessRuntimeFlag()) {
-    const cached = await getServerlessAsset(assetId);
-    if (cached?.svgContent) {
-      const statelessRes = await fetch('/api/export/single', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: cached.id,
-          title: cached.title,
-          svgContent: cached.svgContent,
-          format,
-        }),
-      });
-      if (statelessRes.ok) {
-        const blob = await statelessRes.blob();
-        triggerBlobDownload(blob, `${assetId}.${format}`);
-        return;
-      }
-      const statelessErr = await statelessRes.json().catch(() => ({}));
-      throw new Error(statelessErr.error || `Failed to export ${format.toUpperCase()}`);
-    }
-  }
-
-  const err = await res.json().catch(() => ({}));
-  throw new Error(err.error || `Failed to export ${format.toUpperCase()}`);
-}
-
-async function getMatchingCachedAssets(payload: {
-  assetIds?: string[];
-  batchId?: string;
-}): Promise<StockAsset[] | undefined> {
-  if (!getServerlessRuntimeFlag()) return undefined;
-  const cached = await getServerlessAssets();
-  if (cached.length === 0) return undefined;
-  if (Array.isArray(payload.assetIds) && payload.assetIds.length > 0) {
-    const idSet = new Set(payload.assetIds);
-    return cached.filter((a) => idSet.has(a.id));
-  }
-  if (payload.batchId) {
-    return cached.filter((a) => a.batchId === payload.batchId);
-  }
-  return cached;
-}
-
-export async function downloadExportBundle(payload: {
-  assetIds?: string[];
-  batchId?: string;
-  formats: ('svg' | 'eps' | 'png' | 'jpg')[];
-  includeAdobeCsv: boolean;
-  includeShutterstockCsv: boolean;
-  rasterSize?: number;
-  jpgQuality?: number;
-}): Promise<void> {
-  const cachedAssets = await getMatchingCachedAssets(payload);
-  const res = await fetch('/api/export/bundle', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(cachedAssets ? { ...payload, assets: cachedAssets } : payload),
-  });
+  const res = await fetch(
+    `/api/animations/${encodeURIComponent(projectId)}/download/${encodeURIComponent(format)}`
+  );
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to create export bundle');
+    throw new Error(err.error || `Failed to export ${format}`);
   }
   const blob = await res.blob();
-  const filename = payload.batchId
-    ? `${payload.batchId}-bundle.zip`
-    : 'zuumstock-export-bundle.zip';
+  const extInfo = EXPORT_FORMAT_LABELS[format];
+  const filename =
+    format === 'mov_alpha'
+      ? `${projectId}-alpha.mov`
+      : format === 'mov_prores'
+      ? `${projectId}-prores.mov`
+      : format === 'png_sequence'
+      ? `${projectId}-png-sequence.zip`
+      : format === 'source_zip'
+      ? `${projectId}-source.zip`
+      : format === 'mp4_preview'
+      ? `${projectId}-preview.mp4`
+      : format === 'gif_preview'
+      ? `${projectId}-preview.gif`
+      : format === 'thumbnail_png'
+      ? `${projectId}-thumb.png`
+      : `${projectId}${extInfo?.ext || '.bin'}`;
   triggerBlobDownload(blob, filename);
 }
 
-export async function downloadMetadataCsv(payload: {
-  assetIds?: string[];
+export async function downloadAnimationCsv(payload: {
+  projectIds?: string[];
   batchId?: string;
   platform: 'adobe_stock' | 'shutterstock';
-  fileExtension?: 'eps' | 'svg' | 'png' | 'jpg';
+  fileExtension?: 'mp4' | 'mov' | 'svg';
 }): Promise<void> {
-  const cachedAssets = await getMatchingCachedAssets(payload);
-  const res = await fetch('/api/export/csv', {
+  const res = await fetch('/api/animations/export-csv', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(cachedAssets ? { ...payload, assets: cachedAssets } : payload),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to generate CSV');
+    throw new Error(err.error || 'CSV export failed');
   }
   const blob = await res.blob();
   const filename =
     payload.platform === 'shutterstock'
-      ? 'shutterstock-metadata.csv'
-      : 'adobe-stock-metadata.csv';
+      ? 'shutterstock-animations.csv'
+      : 'adobe-stock-animations.csv';
+  triggerBlobDownload(blob, filename);
+}
+
+export async function downloadAnimationZip(payload: {
+  projectIds?: string[];
+  batchId?: string;
+  formats: AnimationExportFormat[];
+  includeAdobeCsv: boolean;
+  includeShutterstockCsv: boolean;
+}): Promise<void> {
+  const res = await fetch('/api/animations/export-zip', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'ZIP export failed');
+  }
+  const blob = await res.blob();
+  const filename = payload.batchId
+    ? `${payload.batchId}-animations.zip`
+    : 'stockforge-animations-bundle.zip';
   triggerBlobDownload(blob, filename);
 }
 

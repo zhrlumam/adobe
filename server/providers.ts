@@ -1,13 +1,27 @@
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import type {
+  AnimationCategory,
+  AnimationLayer,
+  AnimationMetadata,
+  AnimationProject,
+  AnimationType,
+  BackgroundMode,
   DesignStyle,
+  FpsOption,
   ProviderCatalogEntry,
   ProviderSlug,
   ProviderState,
   ProviderStatus,
+  ResolutionPreset,
   StockCategory,
   TargetPlatform,
+  VisualStyle,
 } from '../src/types/stockforge.js';
+import {
+  buildProceduralAnimationProject,
+  computeProjectHash,
+  RESOLUTION_MAP,
+} from './animationEngine.js';
 import {
   addProductionLog,
   db,
@@ -16,6 +30,7 @@ import {
   setProviderApiKey,
   updateProviderRecordStatus,
 } from './db.js';
+import { normalizeKeywords } from './metadataExport.js';
 
 export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
   {
@@ -54,6 +69,45 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
         label: 'Gemini 4 Neon (Paid Key Required)',
         tier: 'paid',
         notes: 'High-reasoning flagship model; requires billing-enabled API key.',
+      },
+    ],
+  },
+  {
+    slug: 'openai',
+    name: 'OpenAI API',
+    description:
+      'Official OpenAI API supporting structured JSON animation specifications, vector geometry, and stock metadata.',
+    officialUrl: 'https://platform.openai.com/docs/models',
+    apiKeyUrl: 'https://platform.openai.com/api-keys',
+    setupSteps: [
+      'Sign in at platform.openai.com and open API Keys.',
+      'Click "Create new secret key" with model inference permissions.',
+      'Paste the key below and test connection to fetch live models from OpenAI.',
+    ],
+    requiresApiKey: true,
+    freeTierSummary: 'Pay-as-you-go API billing (verify model availability via live /v1/models).',
+    rateLimitsSummary: 'Tier-based RPM and TPM limits returned in response headers.',
+    structuredOutputSupport: 'JSON Object Mode (response_format: json_object)',
+    commercialTerms: 'Full commercial ownership of API outputs under OpenAI Business/API terms.',
+    defaultBaseUrl: 'https://api.openai.com/v1',
+    recommendedModels: [
+      {
+        id: 'gpt-4o-mini',
+        label: 'GPT-4o mini',
+        tier: 'paid',
+        notes: 'Fast, low-cost structured JSON animation & SVG specification synthesis.',
+      },
+      {
+        id: 'gpt-4o',
+        label: 'GPT-4o',
+        tier: 'paid',
+        notes: 'Flagship multi-layer composition and motion specification quality.',
+      },
+      {
+        id: 'o4-mini',
+        label: 'o4-mini',
+        tier: 'paid',
+        notes: 'Reasoning model for complex motion choreography.',
       },
     ],
   },
@@ -476,8 +530,40 @@ export async function testProviderConnection(
       if (!response.text) {
         throw new Error('Empty response returned from Gemini API.');
       }
+
+      // Query real available models from Gemini API
+      let liveModels = provider.catalog.recommendedModels.map((m) => m.id);
+      try {
+        const discovered: string[] = [];
+        const pager = await withTimeout(
+          ai.models.list({ config: { pageSize: 50 } }),
+          10000,
+          'Gemini model list timeout'
+        );
+        for await (const m of pager) {
+          const rawName = String(m.name || '').replace(/^models\//, '');
+          const actions = Array.isArray(m.supportedActions) ? m.supportedActions : [];
+          if (
+            rawName &&
+            rawName.includes('gemini') &&
+            (actions.length === 0 || actions.includes('generateContent'))
+          ) {
+            discovered.push(rawName);
+          }
+          if (discovered.length >= 30) break;
+        }
+        if (discovered.length > 0) {
+          liveModels = Array.from(new Set([...liveModels, ...discovered]));
+          db.prepare('UPDATE providers SET available_models_json = ? WHERE slug = ?').run(
+            JSON.stringify(liveModels),
+            slug
+          );
+        }
+      } catch {
+        // Keep recommended models if models.list scope is restricted
+      }
+
       const latencyMs = Date.now() - start;
-      const models = provider.catalog.recommendedModels.map((m) => m.id);
       updateProviderRecordStatus(slug, 'connected', null, null);
       addProductionLog({
         eventType: 'connection_test',
@@ -485,9 +571,9 @@ export async function testProviderConnection(
         model: targetModel,
         status: 'success',
         latencyMs,
-        message: `Verified Gemini connection with ${targetModel}`,
+        message: `Verified Gemini connection with ${targetModel} (${liveModels.length} models)`,
       });
-      return { ok: true, latencyMs, models, rateLimitInfo: null };
+      return { ok: true, latencyMs, models: liveModels, rateLimitInfo: null };
     }
 
     if (slug === 'ollama') {
@@ -523,11 +609,19 @@ export async function testProviderConnection(
       };
     }
 
-    // OpenAI-compatible providers: Groq, OpenRouter, Mistral, Hugging Face, Custom
+    // OpenAI, Groq, OpenRouter, Mistral, Hugging Face, Custom
     let discoveredModels: string[] = [];
     let rateLimits: Record<string, string> | null = null;
 
-    if (slug !== 'huggingface') {
+    if (slug === 'huggingface') {
+      const whoResp = await fetch('https://huggingface.co/api/whoami-v2', {
+        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!whoResp.ok) {
+        throw new Error(`Hugging Face token verification failed (HTTP ${whoResp.status}).`);
+      }
+    } else {
       const modelsResp = await fetch(`${baseUrl}/models`, {
         headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
         signal: AbortSignal.timeout(12000),
@@ -542,6 +636,9 @@ export async function testProviderConnection(
       if (slug === 'openrouter') {
         const freeIds = ids.filter((id) => id.endsWith(':free') || id === 'openrouter/free');
         if (freeIds.length > 0) ids = freeIds;
+      } else if (slug === 'openai') {
+        const chatIds = ids.filter((id) => id.startsWith('gpt-') || id.startsWith('o'));
+        if (chatIds.length > 0) ids = chatIds;
       }
       if (ids.length > 0) {
         discoveredModels = ids.slice(0, 40);
@@ -1191,5 +1288,292 @@ function formatUpstreamError(err: unknown, providerSlug: string, model: string):
 
   return raw.length > 350 ? `${raw.slice(0, 350)}...` : raw;
 }
+
+// ============================================================================
+// STOCK ANIMATION SPECIFICATION & METADATA SYNTHESIS
+// ============================================================================
+
+interface AiAnimationBlueprint {
+  name?: string;
+  palette?: string[];
+  backgroundColor?: string;
+  title?: string;
+  description?: string;
+  keywords?: string[];
+  adobeCategory?: string;
+  shutterstockCategory?: string;
+  layerOverrides?: Array<{
+    name?: string;
+    color?: string;
+    secondaryColor?: string;
+    label?: string;
+    count?: number;
+    speed?: number;
+    customPath?: string;
+  }>;
+}
+
+function sanitizeColorForGreenScreen(hex: string, bgMode: BackgroundMode): string {
+  const clean = hex.trim();
+  if (!/^#[0-9a-fA-F]{6}$/.test(clean)) return '#3B82F6';
+  if (bgMode !== 'green_screen') return clean;
+  const r = parseInt(clean.slice(1, 3), 16);
+  const g = parseInt(clean.slice(3, 5), 16);
+  const b = parseInt(clean.slice(5, 7), 16);
+  if (g > 165 && r < 115 && b < 115) return '#3B82F6';
+  return clean;
+}
+
+export async function generateAnimationSpecWithProvider(params: {
+  id: string;
+  batchId?: string | null;
+  name?: string;
+  prompt: string;
+  category: AnimationCategory;
+  animationType?: AnimationType;
+  visualStyle: VisualStyle;
+  backgroundMode: BackgroundMode;
+  backgroundColor?: string;
+  resolution: ResolutionPreset;
+  durationSec: number;
+  fps: FpsOption;
+  targetPlatform?: TargetPlatform;
+  providerSlug: ProviderSlug;
+  model?: string;
+  seed?: number;
+}): Promise<{ project: AnimationProject; latencyMs: number; modelUsed: string }> {
+  const provider = getProviderBySlug(params.providerSlug);
+  const { key: apiKey } = getProviderApiKey(params.providerSlug);
+  const model = params.model?.trim() || provider.selectedModel;
+
+  if (provider.catalog.requiresApiKey && !apiKey) {
+    throw new Error(
+      `Provider "${provider.name}" has no API key configured. Open AI Providers to add your key or use the Built-in Procedural Engine.`
+    );
+  }
+
+  const start = Date.now();
+  const dims = RESOLUTION_MAP[params.resolution] ?? RESOLUTION_MAP['1920x1080'];
+  const baseProject = buildProceduralAnimationProject({
+    id: params.id,
+    batchId: params.batchId,
+    name: params.name,
+    prompt: params.prompt,
+    category: params.category,
+    animationType: params.animationType,
+    visualStyle: params.visualStyle,
+    backgroundMode: params.backgroundMode,
+    backgroundColor: params.backgroundColor,
+    resolution: params.resolution,
+    durationSec: params.durationSec,
+    fps: params.fps,
+    targetPlatform: params.targetPlatform,
+    seed: params.seed,
+  });
+
+  const sysPrompt = `You are a Principal Motion Graphics Director and Stock Footage Metadata Specialist for Adobe Stock and Shutterstock.
+Design a commercial animation specification and marketplace metadata JSON for an animated ${dims.width}x${dims.height} (${params.durationSec}s @ ${params.fps}fps) production.
+Rules:
+- Background Mode is "${params.backgroundMode}". ${params.backgroundMode === 'green_screen' ? 'NEVER use green colors (#00FF00 or strong green hues) in foreground palette or layerOverrides to avoid chroma-key spill.' : ''}
+- Palette: 5 harmonious hex colors.
+- title: 40-130 chars, accurate commercial English title without trademarked names or spam terms.
+- description: 60-200 chars describing motion, visual style, background, and stock use cases.
+- keywords: 18-35 unique lowercase relevant stock keywords (no padding or trademarks).
+- Return ONLY valid JSON matching the requested shape.`;
+
+  const userMsg = `Prompt: ${params.prompt}
+Category: ${params.category}
+Animation Type: ${baseProject.animationType}
+Visual Style: ${params.visualStyle}
+Background Mode: ${params.backgroundMode}
+Resolution: ${params.resolution}, Duration: ${params.durationSec}s, FPS: ${params.fps}
+Existing Layers (${baseProject.layers.length}): ${baseProject.layers.map((l) => `${l.name} (${l.type})`).join(', ')}
+
+Return JSON with keys: name, palette (5 hex strings), backgroundColor (hex), title, description, keywords (string[]), adobeCategory, shutterstockCategory, layerOverrides (array of {name, color, secondaryColor, label, count, speed}).`;
+
+  let rawJsonText = '';
+
+  if (params.providerSlug === 'gemini') {
+    const ai = new GoogleGenAI({
+      apiKey: apiKey!,
+      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+    });
+    try {
+      const resp = await withTransient503Retry(() =>
+        withTimeout(
+          ai.models.generateContent({
+            model,
+            contents: userMsg,
+            config: {
+              systemInstruction: sysPrompt,
+              responseMimeType: 'application/json',
+              ...getGeminiThinkingConfig(model, 'generate'),
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING },
+                  palette: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  backgroundColor: { type: Type.STRING },
+                  title: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                  keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  adobeCategory: { type: Type.STRING },
+                  shutterstockCategory: { type: Type.STRING },
+                  layerOverrides: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        name: { type: Type.STRING },
+                        color: { type: Type.STRING },
+                        secondaryColor: { type: Type.STRING },
+                        label: { type: Type.STRING },
+                        count: { type: Type.NUMBER },
+                        speed: { type: Type.NUMBER },
+                      },
+                    },
+                  },
+                },
+                required: ['palette', 'title', 'description', 'keywords', 'adobeCategory', 'shutterstockCategory'],
+              },
+            },
+          }),
+          45000,
+          `Gemini animation spec timed out after 45s on "${model}".`
+        )
+      );
+      rawJsonText = (resp.text ?? '').trim();
+    } catch (err) {
+      const msg = formatUpstreamError(err, params.providerSlug, model);
+      updateProviderRecordStatus(params.providerSlug, 'error', msg, null);
+      throw new Error(msg);
+    }
+  } else {
+    const baseUrl = provider.baseUrl.replace(/\/+$/, '');
+    const endpoint =
+      params.providerSlug === 'ollama'
+        ? `${baseUrl}/v1/chat/completions`
+        : `${baseUrl}/chat/completions`;
+    const payloadBody: Record<string, unknown> = {
+      model,
+      messages: [
+        { role: 'system', content: sysPrompt },
+        { role: 'user', content: userMsg },
+      ],
+      max_tokens: 2048,
+    };
+    if (['openai', 'groq', 'mistral', 'ollama'].includes(params.providerSlug)) {
+      payloadBody.response_format = { type: 'json_object' };
+    }
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        ...(params.providerSlug === 'openrouter'
+          ? { 'HTTP-Referer': process.env.APP_URL || 'http://localhost:3000', 'X-Title': 'StockForge Animation Studio' }
+          : {}),
+      },
+      body: JSON.stringify(payloadBody),
+      signal: AbortSignal.timeout(45000),
+    });
+    const rateLimits = extractRateLimitHeaders(resp.headers);
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '');
+      const msg = formatUpstreamError(
+        new Error(`${provider.name} HTTP ${resp.status}: ${errText.slice(0, 500)}`),
+        params.providerSlug,
+        model
+      );
+      updateProviderRecordStatus(params.providerSlug, 'error', msg, rateLimits);
+      throw new Error(msg);
+    }
+    const data = (await resp.json()) as { choices?: { message?: { content?: string } }[] };
+    rawJsonText = data.choices?.[0]?.message?.content?.trim() || '';
+    updateProviderRecordStatus(params.providerSlug, 'connected', null, rateLimits);
+  }
+
+  let cleaned = rawJsonText.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  const fence = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) cleaned = fence[1].trim();
+  const fb = cleaned.indexOf('{');
+  const lb = cleaned.lastIndexOf('}');
+  if (fb !== -1 && lb > fb) cleaned = cleaned.slice(fb, lb + 1);
+
+  const blueprint = JSON.parse(cleaned) as AiAnimationBlueprint;
+
+  const nextPalette =
+    Array.isArray(blueprint.palette) && blueprint.palette.length >= 3
+      ? blueprint.palette.slice(0, 6).map((c) => sanitizeColorForGreenScreen(String(c), params.backgroundMode))
+      : baseProject.palette;
+
+  const mergedLayers: AnimationLayer[] = baseProject.layers.map((layer, idx) => {
+    const ov = blueprint.layerOverrides?.[idx];
+    if (!ov) {
+      return {
+        ...layer,
+        color: sanitizeColorForGreenScreen(nextPalette[idx % nextPalette.length] || layer.color, params.backgroundMode),
+        secondaryColor: sanitizeColorForGreenScreen(
+          nextPalette[(idx + 1) % nextPalette.length] || layer.secondaryColor,
+          params.backgroundMode
+        ),
+      };
+    }
+    return {
+      ...layer,
+      name: ov.name?.trim() ? ov.name.trim().slice(0, 60) : layer.name,
+      color: ov.color ? sanitizeColorForGreenScreen(ov.color, params.backgroundMode) : layer.color,
+      secondaryColor: ov.secondaryColor
+        ? sanitizeColorForGreenScreen(ov.secondaryColor, params.backgroundMode)
+        : layer.secondaryColor,
+      params: {
+        ...layer.params,
+        ...(ov.label ? { label: String(ov.label).slice(0, 18) } : {}),
+        ...(typeof ov.count === 'number' && ov.count >= 2 && ov.count <= 60 ? { count: Math.round(ov.count) } : {}),
+        ...(typeof ov.speed === 'number' && ov.speed >= 0.3 && ov.speed <= 3.0 ? { speed: ov.speed } : {}),
+      },
+    };
+  });
+
+  const nextMetadata: AnimationMetadata = {
+    title: String(blueprint.title || baseProject.metadata.title).trim().slice(0, 180),
+    description: String(blueprint.description || baseProject.metadata.description).trim().slice(0, 200),
+    keywords: normalizeKeywords(
+      Array.isArray(blueprint.keywords) ? blueprint.keywords.map(String) : baseProject.metadata.keywords,
+      { prompt: params.prompt, category: 'Abstract', style: params.visualStyle }
+    ),
+    adobeCategory: String(blueprint.adobeCategory || baseProject.metadata.adobeCategory),
+    shutterstockCategory: String(blueprint.shutterstockCategory || baseProject.metadata.shutterstockCategory),
+    targetPlatform: params.targetPlatform ?? 'both',
+  };
+
+  const finalProject: AnimationProject = {
+    ...baseProject,
+    name: params.name?.trim() || blueprint.name?.trim() || baseProject.name,
+    backgroundColor:
+      params.backgroundMode === 'green_screen'
+        ? '#00FF00'
+        : params.backgroundMode === 'transparent'
+        ? 'transparent'
+        : params.backgroundColor || blueprint.backgroundColor || baseProject.backgroundColor,
+    palette: nextPalette,
+    layers: mergedLayers,
+    metadata: nextMetadata,
+    providerSlug: params.providerSlug,
+    model,
+  };
+  finalProject.projectHash = computeProjectHash(finalProject);
+
+  if (params.providerSlug === 'gemini') {
+    updateProviderRecordStatus('gemini', 'connected', null, null);
+  }
+
+  return {
+    project: finalProject,
+    latencyMs: Date.now() - start,
+    modelUsed: model,
+  };
+}
+
 
 
